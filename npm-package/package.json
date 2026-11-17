@@ -14,7 +14,8 @@
   "files": ["extensions", "skills", "vendor", "README.md", "LICENSE", "NOTICE.md"],
   "pi": {
     "extensions": ["./extensions/percho-workbench.ts"],
-    "skills": ["./skills"]
+    "skills": ["./skills"],
+    "image": "https://raw.githubusercontent.com/xueccci/percho-workbench-plugin/master/docs/workbench.png"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

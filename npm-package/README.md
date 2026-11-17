@@ -2,6 +2,8 @@
 
 Give your installed **Percho (Windows x64, 0.6.8 build `87476fa1`)** a real right-hand pane: an embedded browser plus the project file tree. The agent gets a `workbench` tool that drives the exact page you see.
 
+![Workbench pane with an embedded page](https://raw.githubusercontent.com/xueccci/percho-workbench-plugin/master/docs/workbench.png)
+
 This package is a Pi package (`pi-package` keyword) that carries the installer. Install it, then let the extension patch Percho — it is reversible and refuses any other Percho build.
 
 ## Install the package

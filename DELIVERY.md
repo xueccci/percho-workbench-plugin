@@ -5,6 +5,7 @@
 ## 文件
 
 - 安装包：`release/percho-workbench-plugin-0.1.0-win-x64.zip`（约 4 MB）。
+- npm 包（Percho 包市场用）：`release/percho-workbench-0.1.0.tgz`，内含 `pi-package` keyword、`percho_workbench` 工具与 skill。
 - 安装入口：解压后的 `install.cmd`。
 - 卸载入口：解压后的 `uninstall.cmd`。
 - 状态入口：解压后的 `status.cmd`。
@@ -38,7 +39,29 @@ node scripts/verify-release.mjs "<原版 Percho 目录>" "<Workbench 源码目�
 - `artifacts/release-verification.json`、`artifacts/release-verification.log`。
 - `artifacts/workbench-agent-same-page.png`、`artifacts/workbench-files.png`。
 - `artifacts/source-verification.json`。
+- `artifacts/pi-extension-test.json`、`artifacts/pi-package.json`（npm 包体积与文件数）。
 - `runtime-test.log`。
+
+## Pi 包（Percho 包市场）
+
+`npm-package/` 是可被 pi.dev/packages 索引的 Pi 包，`npm run build:pi` 把安装器产物同步进 `vendor/`：
+
+- 工具 `percho_workbench`：`detect` / `status` / `install` / `uninstall`；安装会在约 6 秒后关闭 Percho、打补丁、自动重启。
+- 命令 `/percho-workbench`。
+- skill `percho-workbench`。
+
+已验证：`npm pack` 产物解压后用真实 `pi -e` 加载，模型调用 `percho_workbench(action:"detect")` 返回 `D:\pi-desktop\Percho`；本地目录安装与本机 `pi list` 均正常。
+
+## 只剩人工步骤
+
+以下是本机无法代做、需要你醒来后一次性完成的（都已准备就绪）：
+
+1. **npm 登录**（唯一真正的卡点）：在本机终端执行 `npm login --auth-type=web`（需要 2FA 时输入验证器的 6 位码），完成后 `npm whoami` 应打印用户名。
+2. **发布 npm 包**：`npm publish "D:\插件\percho-workbench-plugin\release\percho-workbench-0.1.0.tgz"`。发布后 `npm view percho-workbench` 应返回 0.1.0。发布完成后 pi.dev/packages 会按 `pi-package` keyword 索引；我没有可主动提交的入口，索引时间未验证。
+3. **可选**：在 Percho「设置 → 包」里搜 `percho-workbench` 确认能装；若已安装过 ZIP 版本，则无需再装。
+4. **可选**：升级 Percho 前先卸载补丁（`uninstall.cmd`），否则安装器会因版本不匹配拒绝。
+
+除此之外无需人工操作：安装包、源码包、npm tarball 已构建并验证，仓库与 Release 已推送。
 
 ## 已知范围
 
@@ -47,4 +70,4 @@ node scripts/verify-release.mjs "<原版 Percho 目录>" "<Workbench 源码目�
 - 安装后关闭 Percho 自动更新，卸载恢复上游行为。升级 Percho 前先卸载。
 - 正常安装备份为 `resources/.percho-workbench-plugin/original.bin`，避免 Electron 缓存 `.asar` 备份而导致文件锁。不可手动删除该备份。
 - 没有验证其他 Percho 构建、其他 Windows 机器、macOS/Linux、实际管理员提权和杀毒软件策略；当前版本对不支持的构建直接拒绝。
-- 未创建或推送 GitHub 仓库；安装包和源码项目已在本机生成。
+- 仓库已推送 `github.com/xueccci/percho-workbench-plugin` 并发布 v0.1.0；npm 发布仍待账号登录。
