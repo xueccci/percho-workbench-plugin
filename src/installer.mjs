@@ -60,28 +60,36 @@ function assertHost(meta, manifest) {
 			`Unsupported Percho. Required ${manifest.host.version} (${manifest.host.commit.slice(0, 8)}); got ${meta.version}.`,
 		);
 }
-export function assertClosed(target) {
-	if (process.platform !== "win32") return;
-	const script = `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Get-Process Percho -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne ${process.pid} } | Select-Object -ExpandProperty Path -ErrorAction Stop`;
+/** Paths of running processes with this simple name; empty when none exist. */
+export function runningProcessPaths(name) {
+	if (process.platform !== "win32") return [];
+	if (!/^[A-Za-z][\w.-]{0,60}$/.test(name)) throw new Error("Unsupported process name");
+	const script = `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $p = @(Get-Process ${name} -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne ${process.pid} }); if ($p.Count -eq 0) { 'none' } else { $p | ForEach-Object { $_.Path } }`;
 	let output;
 	try {
 		output = execFileSync(
 			"powershell.exe",
 			["-NoProfile", "-Command", script],
 			{ encoding: "utf8", windowsHide: true },
-		);
+		).trim();
 	} catch (error) {
 		throw new Error(
 			"Could not verify whether Percho is running; installation stopped.",
 			{ cause: error },
 		);
 	}
+	// Emptied output means the probe failed rather than reported an empty list.
+	if (!output)
+		throw new Error(
+			"Could not verify whether Percho is running; installation stopped.",
+		);
+	return output === "none"
+		? []
+		: output.split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+}
+export function assertClosed(target) {
 	const executable = join(target, "Percho.exe").toLowerCase();
-	if (
-		output
-			.split(/\r?\n/)
-			.some((path) => path.trim().toLowerCase() === executable)
-	)
+	if (runningProcessPaths("Percho").some((path) => path.toLowerCase() === executable))
 		throw new Error(
 			"Target Percho is running. Exit it completely, then run the installer again. No processes were stopped.",
 		);

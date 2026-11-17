@@ -19,6 +19,7 @@ import {
 	ensureSpace,
 	hashFile,
 	manage,
+	runningProcessPaths,
 } from "../src/installer.mjs";
 
 test("space preflight rejects impossible allocation before backup", async () => {
@@ -26,6 +27,13 @@ test("space preflight rejects impossible allocation before backup", async () => 
 		ensureSpace(tmpdir(), Number.MAX_SAFE_INTEGER),
 		/Not enough free space/,
 	);
+});
+
+test("process probe distinguishes no matching process from a live one", () => {
+	assert.deepEqual(runningProcessPaths("PerchoDefinitelyNotRunning"), []);
+	const live = runningProcessPaths("Percho");
+	assert.ok(Array.isArray(live));
+	for (const path of live) assert.ok(path.toLowerCase().endsWith("percho.exe"), path);
 });
 
 async function fixture(t) {
