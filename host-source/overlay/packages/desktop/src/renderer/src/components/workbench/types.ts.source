@@ -1,0 +1,8 @@
+export type {
+	WorkbenchCommand,
+	WorkbenchFileContent,
+	WorkbenchFileEntry,
+	WorkbenchResult,
+	WorkbenchState,
+	WorkbenchTab,
+} from "@percho/shared";

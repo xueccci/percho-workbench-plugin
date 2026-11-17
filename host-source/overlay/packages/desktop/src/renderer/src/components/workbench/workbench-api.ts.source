@@ -1,0 +1,5 @@
+import { getPi } from "../../api";
+
+export function getWorkbenchApi() {
+	return getPi();
+}

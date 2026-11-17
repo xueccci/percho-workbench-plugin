@@ -1,0 +1,22 @@
+export const WORKBENCH_MIN_WIDTH = 300;
+export const WORKBENCH_MAX_WIDTH = 720;
+export const WORKBENCH_DEFAULT_WIDTH = 440;
+export const WORKBENCH_WIDTH_STORAGE_KEY = "percho-workbench.width";
+/** Keep this much room for the chat column when the window is narrow. */
+const CHAT_MIN_ROOM = 420;
+
+export function clampWorkbenchWidth(width: number, max = WORKBENCH_MAX_WIDTH): number {
+	const finite = Number.isFinite(width) ? width : WORKBENCH_DEFAULT_WIDTH;
+	return Math.round(Math.min(Math.max(finite, WORKBENCH_MIN_WIDTH), Math.max(WORKBENCH_MIN_WIDTH, max)));
+}
+
+/** Width ceiling for the current window, leaving room for the conversation. */
+export function workbenchMaxWidth(windowWidth: number, max = WORKBENCH_MAX_WIDTH): number {
+	return clampWorkbenchWidth(Math.min(max, windowWidth - CHAT_MIN_ROOM), max);
+}
+
+export function readStoredWorkbenchWidth(): number {
+	if (typeof localStorage === "undefined") return WORKBENCH_DEFAULT_WIDTH;
+	const stored = Number(localStorage.getItem(WORKBENCH_WIDTH_STORAGE_KEY));
+	return clampWorkbenchWidth(Number.isFinite(stored) && stored > 0 ? stored : WORKBENCH_DEFAULT_WIDTH);
+}

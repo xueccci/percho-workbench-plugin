@@ -1,0 +1,79 @@
+import type {
+	WorkbenchBridge,
+	WorkbenchCommand,
+	WorkbenchFileContent,
+	WorkbenchFileEntry,
+	WorkbenchResult,
+	WorkbenchState,
+} from "./types";
+
+/** Command shape before the binding stamps the owning session id. */
+export type WorkbenchCommandInput = Omit<WorkbenchCommand, "sessionId">;
+
+export interface WorkbenchBindingOptions {
+	/** Session that owns the workbench pane; stamped onto every command. */
+	sessionId: string;
+	/** Main-process implementation (never Electron in this package). */
+	bridge: WorkbenchBridge;
+	/**
+	 * State publisher: the backend re-emits every result snapshot so main/renderer
+	 * subscribers see agent-driven changes without polling.
+	 */
+	onState?: (state: WorkbenchState) => void;
+	/**
+	 * Session-generation guard. Checked before the call and again after the host
+	 * round-trip so a disposed/reloaded session cannot publish stale state.
+	 */
+	isAlive?: () => boolean;
+}
+
+/**
+ * Session-scoped facade over a {@link WorkbenchBridge}.
+ *
+ * This is the only place that knows which session a bridge call belongs to; tools and
+ * the extension stay session-agnostic. It also drops results from sessions that were
+ * disposed while the host was still executing (same generation guard pattern as the
+ * channel-watch extension).
+ */
+export interface WorkbenchBinding {
+	readonly sessionId: string;
+	execute(command: WorkbenchCommandInput): Promise<WorkbenchResult>;
+	listFiles(path?: string): Promise<WorkbenchFileEntry[]>;
+	readFile(path: string): Promise<WorkbenchFileContent>;
+}
+
+export function createWorkbenchBinding(options: WorkbenchBindingOptions): WorkbenchBinding {
+	const { sessionId, bridge } = options;
+
+	const assertAlive = (): void => {
+		if (options.isAlive && !options.isAlive()) throw new Error("Workbench session is no longer active");
+	};
+
+	const publish = (state: WorkbenchState): void => {
+		if (!options.onState) return;
+		try {
+			options.onState(state);
+		} catch {
+			// A subscriber failure must not turn a successful host command into a tool error.
+		}
+	};
+
+	return {
+		sessionId,
+		async execute(command) {
+			assertAlive();
+			const result = await bridge.execute({ ...command, sessionId });
+			assertAlive();
+			publish(result.state);
+			return result;
+		},
+		async listFiles(path) {
+			assertAlive();
+			return bridge.listFiles(path === undefined ? { sessionId } : { sessionId, path });
+		},
+		async readFile(path) {
+			assertAlive();
+			return bridge.readFile({ sessionId, path });
+		},
+	};
+}

@@ -1,0 +1,57 @@
+import { open, readdir, realpath } from "node:fs/promises";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import type { WorkbenchFileContent, WorkbenchFileEntry } from "@percho/shared";
+
+const IMAGE_TYPES: Record<string, string> = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".bmp": "image/bmp",
+};
+
+/** Resolve symlinks before containment checks; renderer paths never grant access outside cwd. */
+export async function workspacePath(cwd: string, path = "."): Promise<string> {
+	const root = await realpath(cwd);
+	const target = await realpath(resolve(root, path));
+	const within = relative(root, target);
+	if (isAbsolute(within) || within === ".." || within.startsWith(`..${sep}`))
+		throw new Error("File is outside this session's workspace");
+	return target;
+}
+
+export async function listWorkspaceFiles(cwd: string, path?: string): Promise<WorkbenchFileEntry[]> {
+	const target = await workspacePath(cwd, path);
+	const entries = await readdir(target, { withFileTypes: true });
+	if (entries.length > 5000) throw new Error("Directory exceeds 5000 entries; open a smaller directory");
+	return entries
+		.filter((entry) => entry.isDirectory() || entry.isFile())
+		.map((entry) => ({ name: entry.name, path: resolve(target, entry.name), directory: entry.isDirectory() }))
+		.sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
+}
+
+export async function readWorkspaceFile(cwd: string, path: string): Promise<WorkbenchFileContent> {
+	const target = await workspacePath(cwd, path);
+	const file = await open(target, "r");
+	try {
+		const info = await file.stat();
+		if (!info.isFile()) throw new Error("Only regular files can be previewed");
+		const mimeType = IMAGE_TYPES[extname(target).toLowerCase()];
+		const limit = mimeType ? 8 * 1024 * 1024 : 256 * 1024;
+		if (mimeType && info.size > limit) throw new Error("Image exceeds the 8 MB preview limit");
+		const data = Buffer.alloc(Math.min(info.size, limit));
+		const { bytesRead } = await file.read(data, 0, data.length, 0);
+		const content = data.subarray(0, bytesRead);
+		if (!mimeType && content.includes(0)) throw new Error("This binary file does not support text preview");
+		return {
+			path: target,
+			kind: mimeType ? "image" : "text",
+			truncated: info.size > limit,
+			content: mimeType ? content.toString("base64") : content.toString("utf8"),
+			...(mimeType ? { mimeType } : {}),
+		};
+	} finally {
+		await file.close();
+	}
+}

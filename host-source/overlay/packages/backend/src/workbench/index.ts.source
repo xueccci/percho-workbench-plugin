@@ -1,0 +1,29 @@
+export {
+	createWorkbenchBinding,
+	type WorkbenchBinding,
+	type WorkbenchBindingOptions,
+	type WorkbenchCommandInput,
+} from "./binding";
+export { makeWorkbenchExtension, type WorkbenchExtensionOptions } from "./extension";
+export {
+	commandFromParams,
+	describeWorkbenchState,
+	makeWorkbenchTool,
+	type WorkbenchBrowserAction,
+	type WorkbenchToolAction,
+	type WorkbenchToolDetails,
+	type WorkbenchToolOptions,
+	type WorkbenchToolParams,
+} from "./tool";
+export {
+	emptyWorkbenchState,
+	type WorkbenchBridge,
+	type WorkbenchCommand,
+	type WorkbenchCommandAction,
+	type WorkbenchFileContent,
+	type WorkbenchFileEntry,
+	type WorkbenchResult,
+	type WorkbenchState,
+	type WorkbenchStateEvent,
+	type WorkbenchTab,
+} from "./types";

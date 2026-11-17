@@ -1,0 +1,157 @@
+import type { WorkbenchCommand } from "@percho/shared";
+import type { WebContents } from "electron";
+
+export function normalizeWorkbenchUrl(value: string): string {
+	let text = value.trim();
+	if (text === "about:blank") return text;
+	if (!/^[a-z][a-z\d+.-]*:\/\//i.test(text)) {
+		if (/^(file|javascript|data|about):/i.test(text)) throw new Error("Only HTTP/HTTPS pages are allowed");
+		text = /^(localhost|127\.0\.0\.1|\[::1\])(?=[:/]|$)/i.test(text) ? `http://${text}` : `https://${text}`;
+	}
+	let url: URL;
+	try {
+		url = new URL(text);
+	} catch {
+		throw new Error("Enter a valid HTTP/HTTPS address");
+	}
+	if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
+		throw new Error("Only HTTP/HTTPS pages without embedded credentials are allowed");
+	return url.href;
+}
+
+export async function evaluatePage<T>(guest: WebContents, expression: string): Promise<T> {
+	const result = await guest.debugger.sendCommand("Runtime.evaluate", {
+		expression,
+		returnByValue: true,
+		awaitPromise: true,
+		userGesture: true,
+	});
+	if (result.exceptionDetails)
+		throw new Error(result.exceptionDetails.exception?.description ?? "Page operation failed");
+	return result.result.value as T;
+}
+
+/** Locator source is a JSON literal; no model-provided JavaScript runs in the page. */
+function elementExpression(target: string): string {
+	return `(() => {
+		const target = ${JSON.stringify(target)};
+		const visible = e => { const r=e.getBoundingClientRect();const s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'; };
+		let elements;
+		const role = /^role=([\\w-]+)(?:\\[name=["'](.*)["']\\])?$/.exec(target);
+		if (role) {
+			const matches = {button:'button,input[type=button],input[type=submit]',link:'a[href]',textbox:'input:not([type=checkbox]):not([type=radio]),textarea,[contenteditable=true]',checkbox:'input[type=checkbox]'};
+			elements = [...document.querySelectorAll('[role="'+role[1]+'"]'+(matches[role[1]]?','+matches[role[1]]:''))];
+			if(role[2]!==undefined) elements=elements.filter(e=>(e.getAttribute('aria-label')||[...e.labels||[]].map(x=>x.textContent).join(' ')||e.innerText||e.value||'').trim()===role[2]);
+		} else if(target.startsWith('text=')) elements=[...document.querySelectorAll('button,a,label,[role=button]')].filter(e=>e.textContent.trim()===target.slice(5));
+		else elements=[...document.querySelectorAll(target)];
+		elements=elements.filter(visible);
+		if(elements.length!==1) throw Error('Locator must match one visible element; matched '+elements.length);
+		const e=elements[0];if(e.disabled||e.getAttribute('aria-disabled')==='true')throw Error('Element is disabled');
+		e.scrollIntoView({block:'center',inline:'center'});return e;
+	})()`;
+}
+
+async function press(guest: WebContents, chord: string): Promise<void> {
+	const parts = chord.split("+");
+	const input = parts.pop() ?? "";
+	const modifiers = parts.reduce((mask, part) => {
+		const bit = { control: 2, ctrl: 2, shift: 8, alt: 1, meta: 4, command: 4 }[part.toLowerCase()];
+		if (!bit) throw new Error(`Unsupported key modifier: ${part}`);
+		return mask | bit;
+	}, 0);
+	const keys: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
+		enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+		tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+		escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+		backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+		delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+		arrowleft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+		arrowup: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+		arrowright: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+		arrowdown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+	};
+	const key =
+		keys[input.toLowerCase()] ??
+		(/^[a-z0-9 ]$/i.test(input)
+			? {
+					key: input,
+					code: input === " " ? "Space" : `${/\d/.test(input) ? "Digit" : "Key"}${input.toUpperCase()}`,
+					windowsVirtualKeyCode: input.toUpperCase().charCodeAt(0),
+				}
+			: undefined);
+	if (!key) throw new Error(`Unsupported key: ${input}`);
+	await guest.debugger.sendCommand("Input.dispatchKeyEvent", {
+		type: "keyDown",
+		...key,
+		modifiers,
+		...(input.toLowerCase() === "enter" ? { text: "\r" } : {}),
+	});
+	if (!modifiers && input.length === 1) await guest.debugger.sendCommand("Input.insertText", { text: input });
+	await guest.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyUp", ...key, modifiers });
+}
+
+export async function browserAction(
+	guest: WebContents,
+	command: WorkbenchCommand,
+): Promise<string | undefined> {
+	if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
+	switch (command.action) {
+		case "snapshot": {
+			const tree = await guest.debugger.sendCommand("Accessibility.getFullAXTree");
+			return (
+				tree.nodes as Array<{
+					ignored?: boolean;
+					role?: { value?: string };
+					name?: { value?: string };
+					value?: { value?: string };
+				}>
+			)
+				.filter((node) => !node.ignored && (node.name?.value || node.value?.value))
+				.map(
+					(node) =>
+						`${node.role?.value ?? ""} ${JSON.stringify(node.name?.value ?? "")}${node.value?.value ? ` value=${JSON.stringify(node.value.value)}` : ""}`,
+				)
+				.join("\n")
+				.slice(0, 16000);
+		}
+		case "click": {
+			const point = await evaluatePage<{ x: number; y: number }>(
+				guest,
+				`(() => {const e=${elementExpression(command.target ?? "")};const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`,
+			);
+			await guest.debugger.sendCommand("Input.dispatchMouseEvent", {
+				type: "mousePressed",
+				...point,
+				button: "left",
+				clickCount: 1,
+			});
+			await guest.debugger.sendCommand("Input.dispatchMouseEvent", {
+				type: "mouseReleased",
+				...point,
+				button: "left",
+				clickCount: 1,
+			});
+			break;
+		}
+		case "fill":
+			await evaluatePage(
+				guest,
+				`(() => {
+				const e=${elementExpression(command.target ?? "")};
+				if(!(e instanceof HTMLInputElement||e instanceof HTMLTextAreaElement||e.isContentEditable)||e.readOnly)throw Error('Element is not editable');
+				e.focus();const value=${JSON.stringify(command.text)};
+				if(e.isContentEditable)e.textContent=value;
+				else Object.getOwnPropertyDescriptor(e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,value);
+				e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:value}));e.dispatchEvent(new Event('change',{bubbles:true}));
+			})()`,
+			);
+			break;
+		case "press":
+			guest.focus();
+			await press(guest, command.key ?? "");
+			break;
+		case "scroll":
+			await evaluatePage(guest, `window.scrollBy(0,${JSON.stringify(command.dy)})`);
+			break;
+	}
+}

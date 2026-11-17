@@ -1,0 +1,67 @@
+import { environmentEntityRef } from "@percho/shared";
+import { useEffect, useState } from "react";
+import { useT } from "../../i18n";
+import { useSessionsStore } from "../../stores/sessions";
+import { initWorkbenchBridge, refreshWorkbenchState, useWorkbenchStore } from "../../stores/workbench";
+import { WorkbenchResizeHandle } from "./WorkbenchResizeHandle";
+import { WorkbenchSession } from "./WorkbenchSession";
+import "./workbench.css";
+
+/**
+ * Right workbench: a real flex sibling of the chat column. Every known session keeps its
+ * pane mounted (only CSS-hidden) so switching sessions never destroys a guest page, and
+ * the agent and the human operate on the same actual page.
+ */
+export function WorkbenchPane() {
+	const t = useT();
+	const activeSessionId = useSessionsStore((state) => state.activeSessionId);
+	const states = useWorkbenchStore((state) => state.states);
+	const sessionIds = useWorkbenchStore((state) => state.sessionIds);
+	const width = useWorkbenchStore((state) => state.width);
+	const [resizing, setResizing] = useState(false);
+
+	// Global events can create state for a session this UI has never queried.
+	useEffect(() => initWorkbenchBridge(), []);
+
+	const local =
+		activeSessionId !== null && environmentEntityRef(activeSessionId).environment.kind === "local";
+
+	// Explicit pull on session change covers events that arrived before the pane mounted.
+	useEffect(() => {
+		if (!activeSessionId || !local) return;
+		void refreshWorkbenchState(activeSessionId);
+	}, [activeSessionId, local]);
+
+	const activeState = activeSessionId ? states[activeSessionId] : undefined;
+	const open = local && activeState?.open === true;
+
+	return (
+		<aside
+			className={`workbench-pane ${open ? "" : "is-collapsed"} ${resizing ? "is-resizing" : ""}`}
+			style={{ width: open ? `${width}px` : 0 }}
+			aria-label={t("workbench.title")}
+			aria-hidden={!open}
+			inert={!open}
+			data-workbench-pane=""
+		>
+			<div className="workbench-pane-inner" style={{ width: `${width}px` }}>
+				{open && <WorkbenchResizeHandle value={width} onResizingChange={setResizing} />}
+				{sessionIds.map((sessionId) => {
+					const state = states[sessionId];
+					if (!state) return null;
+					const active = local && sessionId === activeSessionId;
+					return (
+						<div
+							key={sessionId}
+							className="min-h-0 flex-1"
+							style={{ display: active ? "flex" : "none" }}
+							data-workbench-session-id={sessionId}
+						>
+							<WorkbenchSession sessionId={sessionId} state={state} />
+						</div>
+					);
+				})}
+			</div>
+		</aside>
+	);
+}

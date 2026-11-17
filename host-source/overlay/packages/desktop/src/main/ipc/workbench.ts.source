@@ -1,0 +1,38 @@
+import { WORKBENCH_CHANNELS } from "@percho/shared";
+import { ipcMain } from "electron";
+import { workbench } from "../workbench/manager";
+
+/** Desktop-only handlers reject webview guests and child frames before any file or CDP access. */
+export function registerWorkbenchIpc(): void {
+	const handlers = {
+		workbenchGetState: (args: { sessionId: string }, event: Electron.IpcMainInvokeEvent) =>
+			workbench.getState(args.sessionId, event.sender),
+		workbenchCommand: (
+			args: { command: import("@percho/shared").WorkbenchCommand },
+			event: Electron.IpcMainInvokeEvent,
+		) => workbench.execute(args.command, event.sender),
+		workbenchAttach: (
+			args: { sessionId: string; tabId: string; webContentsId: number },
+			event: Electron.IpcMainInvokeEvent,
+		) => workbench.attach(args.sessionId, args.tabId, args.webContentsId, event.sender),
+		workbenchListFiles: (args: { sessionId: string; path?: string }, event: Electron.IpcMainInvokeEvent) => {
+			workbench.getState(args.sessionId, event.sender);
+			return workbench.bridge.listFiles(args);
+		},
+		workbenchReadFile: (args: { sessionId: string; path: string }, event: Electron.IpcMainInvokeEvent) => {
+			workbench.getState(args.sessionId, event.sender);
+			return workbench.bridge.readFile(args);
+		},
+	};
+	for (const [key, definition] of Object.entries(WORKBENCH_CHANNELS)) {
+		ipcMain.handle(definition.channel, (event, args: unknown) => {
+			workbench.assertSender(event.sender, event.senderFrame);
+			definition.validate(args);
+			const handler = handlers[key as keyof typeof handlers] as (
+				value: unknown,
+				event: Electron.IpcMainInvokeEvent,
+			) => unknown;
+			return handler(args, event);
+		});
+	}
+}

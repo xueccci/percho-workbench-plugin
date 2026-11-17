@@ -1,0 +1,325 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const require = createRequire(new URL("../packages/desktop/package.json", import.meta.url));
+const { _electron } = require("playwright-core");
+const temp = await mkdtemp(join(tmpdir(), "percho-workbench-e2e-"));
+const agent = join(temp, "agent"),
+	workspace = join(temp, "project");
+await mkdir(agent);
+await mkdir(workspace);
+await mkdir(join(workspace, "src"));
+const { privateDirectory } = await import("../packages/backend/src/storage/private-directory.ts");
+await privateDirectory(agent, true);
+await writeFile(join(workspace, "README.md"), "# Workbench file preview\nReal workspace content\n");
+await writeFile(join(workspace, "src/test.txt"), "Nested file works");
+const toolsSeen = [];
+let modelRequests = 0;
+const server = createServer(async (req, res) => {
+	if (req.url.startsWith("/v1/")) {
+		let body = "";
+		for await (const c of req) body += c;
+		let input;
+		try {
+			input = JSON.parse(body);
+		} catch {
+			res.writeHead(400);
+			res.end("Invalid test request");
+			return;
+		}
+		modelRequests++;
+		toolsSeen.push(input.tools?.map((t) => t.function.name));
+		const hasResult = input.messages.some((m) => m.role === "tool");
+		res.setHeader("Content-Type", "text/event-stream");
+		const delta = hasResult
+			? { content: "Workbench agent test complete" }
+			: {
+					tool_calls: [
+						{
+							index: 0,
+							id: "test-workbench",
+							type: "function",
+							function: {
+								name: "workbench",
+								arguments: JSON.stringify({
+									action: "fill",
+									target: "#name",
+									text: "Agent wrote into visible page",
+								}),
+							},
+						},
+					],
+				};
+		const chunk = (d, reason = null) => ({
+			id: "test",
+			object: "chat.completion.chunk",
+			created: 1,
+			model: "fixture",
+			choices: [{ index: 0, delta: d, finish_reason: reason }],
+		});
+		res.write("data: " + JSON.stringify(chunk({ role: "assistant" })) + "\n\n");
+		res.write("data: " + JSON.stringify(chunk(delta)) + "\n\n");
+		res.write("data: " + JSON.stringify(chunk({}, hasResult ? "stop" : "tool_calls")) + "\n\n");
+		res.end("data: [DONE]\n\n");
+		return;
+	}
+	res.setHeader("Content-Type", "text/html; charset=utf-8");
+	res.end(
+		`<!doctype html><meta charset="utf-8"><title>Shared workbench page</title><link rel="icon" href="data:,"><style>body{font:18px/1.7 system-ui;padding:24px;background:#f8faf9;color:#173c2c}h1{font-size:24px}input,button{font:inherit;padding:8px;max-width:90%}#result{padding:12px;background:#e4f1e8}</style><h1>Percho 内嵌工作区</h1><label>项目名 <input id="name" aria-label="项目名"></label><button onclick="document.querySelector('#result').textContent='已保存：'+document.querySelector('#name').value">保存</button><p id="result">尚未保存</p><a href="/next">下一页</a><a href="/popup" target="_blank">新标签页</a>`,
+	);
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const origin = "http://127.0.0.1:" + server.address().port;
+await writeFile(
+	join(agent, "models.json"),
+	JSON.stringify({
+		providers: {
+			fixture: {
+				baseUrl: origin + "/v1",
+				api: "openai-completions",
+				apiKey: "local-fixture",
+				models: [
+					{
+						id: "fixture",
+						name: "Fixture",
+						reasoning: false,
+						input: ["text"],
+						contextWindow: 128000,
+						maxTokens: 1024,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					},
+				],
+			},
+		},
+	}),
+);
+await writeFile(
+	join(agent, "settings.json"),
+	JSON.stringify({ defaultProvider: "fixture", defaultModel: "fixture", compaction: { enabled: false } }),
+);
+const env = { ...process.env, PERCHO_AGENT_DIR: agent };
+delete env.PI_CODING_AGENT_DIR;
+delete env.ELECTRON_RUN_AS_NODE;
+const application = await _electron.launch({
+	executablePath: process.env.PERCHO_WORKBENCH_EXECUTABLE || require("electron"),
+	args: [
+		...(process.env.PERCHO_WORKBENCH_EXECUTABLE ? [] : [resolve("packages/desktop")]),
+		"--user-data-dir=" + join(temp, "user"),
+		"--no-sandbox",
+	],
+	env,
+	timeout: 30000,
+});
+const errors = [];
+let page;
+const checks = [];
+const command = (sessionId, action, extra = {}) =>
+	page.evaluate(
+		({ sessionId, action, extra }) =>
+			window.pi.workbenchCommand({ command: { sessionId, action, ...extra } }),
+		{ sessionId, action, extra },
+	);
+try {
+	page = await application.firstWindow();
+	page.on("pageerror", (e) => errors.push(e.message));
+	await page.waitForFunction(() => !!window.pi, { timeout: 15000 });
+	await page.waitForFunction(
+		async () => {
+			try {
+				const s = await window.pi.storageStartupGet();
+				return s.phase === "existing" || s.phase === "launching" || s.phase === "ready";
+			} catch {
+				return !!window.PerchoUI;
+			}
+		},
+		{ timeout: 15000 },
+	);
+	const storage = await page.evaluate(() => window.pi.storageStartupGet());
+	console.log("storage", storage.phase);
+	if (storage.phase === "existing")
+		await page.evaluate(() => window.pi.storageStartupAct({ action: "adopt" }));
+	await page.waitForFunction(() => window.PerchoUI?.stores?.useSessionsStore, { timeout: 30000 });
+	await page.evaluate(() => {
+		window.testEvents = [];
+		const api = window.pi.forEnvironment({ kind: "local" });
+		api.onTrustRequest((req) => {
+			void api.respondTrust({ requestId: req.id, answer: 1 });
+		});
+		api.onEvent((e) => window.testEvents.push(e));
+	});
+	const createSession = () =>
+		page.evaluate(async (cwd) => {
+			const store = window.PerchoUI.stores.useSessionsStore;
+			store.getState().activateNewSessionDraftForCwd(cwd);
+			await store.getState().setCurrentModel("fixture", "fixture");
+			const id = await store.getState().createSession();
+			if (!id) throw Error("Session promotion failed");
+			return store.getState().sessions.find((item) => item.sessionId === id);
+		}, workspace);
+	const meta = await createSession();
+	const id = meta.sessionId;
+	await page.locator("[data-workbench-toggle]").click();
+	await page.locator("[data-workbench-pane]").waitFor({ state: "visible" });
+	const result = await command(id, "navigate", { url: origin });
+	assert.equal(result.state.tabs.length, 1);
+	const guestId = await page
+		.locator("webview")
+		.first()
+		.evaluate((v) => v.getWebContentsId());
+	const guestEval = (expression) =>
+		application.evaluate(
+			({ webContents }, { guestId, expression }) => webContents.fromId(guestId).executeJavaScript(expression),
+			{ guestId, expression },
+		);
+	assert.match(await guestEval("document.body.innerText"), /Percho 内嵌工作区/);
+	const pane = await page.locator("[data-workbench-pane]").boundingBox();
+	const chat = await page.locator("[data-session-page]").boundingBox();
+	assert.ok(chat.x + chat.width <= pane.x + 1, "chat is resized beside the browser");
+	checks.push("real webview inside a flex sidebar");
+	await page.screenshot({ path: "artifacts/workbench-browser-light.png" });
+	await command(id, "fill", { target: "#name", text: "User and agent share this page" });
+	await command(id, "click", { target: 'role=button[name="保存"]' });
+	assert.match(await guestEval('document.querySelector("#result").textContent'), /User and agent share/);
+	checks.push("CDP fill and click modify the displayed guest");
+	await guestEval(
+		'window.lastKey="";document.querySelector("#name").focus();document.querySelector("#name").addEventListener("keydown",e=>window.lastKey=e.key)',
+	);
+	await command(id, "press", { key: "Enter" });
+	assert.equal(await guestEval("window.lastKey"), "Enter");
+	assert.equal(await guestEval("typeof require"), "undefined");
+	checks.push("guest keyboard input and Node isolation");
+	const snapshot = await command(id, "snapshot");
+	assert.match(snapshot.text, /项目名/);
+	const shot = await command(id, "screenshot");
+	assert.ok(Buffer.from(shot.image.data, "base64").length > 1000);
+	checks.push("accessibility snapshot and page screenshot");
+	await page.evaluate(
+		async (id) =>
+			window.pi
+				.forEnvironment({ kind: "local" })
+				.prompt({ sessionId: id, text: "Test the workbench tool now" }),
+		id,
+	);
+	await page.waitForFunction(
+		() =>
+			window.testEvents.some(
+				(e) => e.event?.type === "tool_execution_end" && e.event?.toolName === "workbench",
+			),
+		{ timeout: 25000 },
+	);
+	console.log(
+		"tool events",
+		await page.evaluate(() => window.testEvents.filter((e) => e.event?.type === "tool_execution_end")),
+	);
+	assert.equal(await guestEval('document.querySelector("#name").value'), "Agent wrote into visible page");
+	assert.ok(toolsSeen.some((t) => t?.includes("workbench")));
+	checks.push("actual Agent session tool call changes the exact same guest");
+	await command(id, "click", { target: 'role=button[name="保存"]' });
+	await page.screenshot({ path: "artifacts/workbench-agent-same-page.png" });
+	await page.getByRole("tab", { name: "文件", exact: true }).click();
+	await page.getByRole("button", { name: "README.md", exact: true }).click();
+	await page.getByText("Real workspace content", { exact: false }).waitFor();
+	await page.getByRole("button", { name: "src", exact: true }).click();
+	await page.getByRole("button", { name: "test.txt", exact: true }).click();
+	await page.getByText("Nested file works", { exact: true }).waitFor();
+	await page.screenshot({ path: "artifacts/workbench-files.png" });
+	checks.push("real workspace directories and text preview");
+	await assert.rejects(
+		page.evaluate(({ id, path }) => window.pi.workbenchReadFile({ sessionId: id, path }), {
+			id,
+			path: join(temp, "agent/settings.json"),
+		}),
+		/outside/,
+	);
+	await assert.rejects(
+		page.evaluate(
+			({ id }) => window.pi.workbenchAttach({ sessionId: id, tabId: "invalid", webContentsId: 1 }),
+			{ id },
+		),
+		/Guest/,
+	);
+	checks.push("workspace escape and wrong guest are rejected");
+	await page.getByRole("tab", { name: "浏览器", exact: true }).click();
+	await command(id, "hide");
+	await command(id, "open");
+	assert.equal(
+		await page
+			.locator("webview")
+			.first()
+			.evaluate((v) => v.getWebContentsId()),
+		guestId,
+	);
+	checks.push("collapse preserves the same live webview");
+	const resize = page.locator("[data-workbench-resize-handle]");
+	await resize.focus();
+	await page.keyboard.press("ArrowLeft");
+	await page.screenshot({ path: "artifacts/workbench-resized.png" });
+	await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
+	await page.screenshot({ path: "artifacts/workbench-browser-dark.png" });
+	const originalTab = result.state.activeTabId;
+	const added = await command(id, "new_tab", { url: origin + "/next" });
+	assert.equal(added.state.tabs.length, 2);
+	await command(id, "close_tab", { tabId: added.state.activeTabId });
+	assert.equal((await command(id, "select_tab", { tabId: originalTab })).state.tabs.length, 1);
+	const meta2 = await createSession();
+	await command(meta2.sessionId, "navigate", { url: origin });
+	await assert.rejects(command(meta2.sessionId, "select_tab", { tabId: originalTab }), /belong/);
+	await page.evaluate((id) => window.PerchoUI.stores.useSessionsStore.getState().switchSession(id), id);
+	assert.equal(
+		await page
+			.locator(`[data-workbench-session-id="${id}"] webview`)
+			.first()
+			.evaluate((v) => v.getWebContentsId()),
+		guestId,
+	);
+	checks.push("tabs and session ownership preserve independent live pages");
+	await assert.rejects(command(id, "navigate", { url: "data:text/html,blocked" }), /HTTP/);
+	await page.evaluate(
+		async (id) => window.pi.forEnvironment({ kind: "local" }).closeSession({ sessionId: id }),
+		meta2.sessionId,
+	);
+	await page.waitForFunction(
+		(id) => !document.querySelector(`[data-workbench-session-id="${id}"] webview`),
+		meta2.sessionId,
+	);
+	checks.push("session close releases browser guests");
+	console.log(
+		"layout",
+		await page.evaluate(() => ({
+			viewport: [innerWidth, innerHeight],
+			dpr: devicePixelRatio,
+			body: document.body.getBoundingClientRect().toJSON(),
+			pane: document.querySelector("[data-workbench-pane]").getBoundingClientRect().toJSON(),
+			diff: document.querySelector(".diff-sidebar").getBoundingClientRect().toJSON(),
+		})),
+	);
+	assert.deepEqual(errors, []);
+	await writeFile(
+		"artifacts/workbench-e2e-results.json",
+		JSON.stringify({ passed: checks.length, failed: 0, checks, modelRequests }, null, 2),
+	);
+	console.log(JSON.stringify({ passed: checks.length, failed: 0, checks, modelRequests }, null, 2));
+} catch (error) {
+	if (page) await page.screenshot({ path: "artifacts/workbench-failure.png" }).catch(() => {});
+	console.log("errors", errors);
+	if (page)
+		console.log(
+			"storage failure",
+			await page.evaluate(() => window.pi.storageStartupGet()).catch(() => null),
+		);
+	if (page) console.log("events", await page.evaluate(() => window.testEvents?.slice(-8)).catch(() => []));
+	throw error;
+} finally {
+	await application
+		.evaluate(({ BrowserWindow }) => {
+			for (const w of BrowserWindow.getAllWindows()) w.destroy();
+		})
+		.catch(() => {});
+	await application.close();
+	server.closeAllConnections();
+	await new Promise((r) => server.close(r));
+}

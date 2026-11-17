@@ -1,0 +1,290 @@
+import { describe, expect, it, vi } from "vitest";
+import { PiBackend } from "../src/pi-backend";
+import { createWorkbenchBinding } from "../src/workbench/binding";
+import { makeWorkbenchExtension } from "../src/workbench/extension";
+import { commandFromParams, makeWorkbenchTool } from "../src/workbench/tool";
+import { emptyWorkbenchState, type WorkbenchBridge, type WorkbenchState } from "../src/workbench/types";
+
+function state(open = true): WorkbenchState {
+	return {
+		sessionId: "s1",
+		open,
+		tabs: [{ id: "t1", title: "Example", url: "https://example.com" }],
+		activeTabId: "t1",
+	};
+}
+
+function makeBridge(overrides: Partial<WorkbenchBridge> = {}) {
+	const execute = vi.fn(async (command: { action: string }) => ({
+		state: state(),
+		text: `ran ${command.action}`,
+	}));
+	const bridge: WorkbenchBridge = {
+		getState: vi.fn(async () => state()),
+		execute,
+		listFiles: vi.fn(async ({ path }: { sessionId: string; path?: string }) => [
+			{ name: "a.txt", path: path ? `${path}/a.txt` : "a.txt", directory: false },
+		]),
+		readFile: vi.fn(async ({ path }: { sessionId: string; path: string }) => ({
+			path,
+			kind: "text" as const,
+			content: "hello",
+			truncated: false,
+		})),
+		...overrides,
+	};
+	return { bridge, execute };
+}
+
+const ctx = { sessionManager: { getSessionId: () => "s1" } } as never;
+
+describe("commandFromParams", () => {
+	it("maps browser actions and validates required fields", () => {
+		expect(commandFromParams({ action: "open" })).toEqual({ action: "open" });
+		expect(commandFromParams({ action: "open", url: "https://example.com" })).toEqual({
+			action: "open",
+			url: "https://example.com",
+		});
+		expect(commandFromParams({ action: "navigate", url: " https://example.com " })).toEqual({
+			action: "navigate",
+			url: "https://example.com",
+		});
+		expect(commandFromParams({ action: "fill", target: "#q", text: "" })).toEqual({
+			action: "fill",
+			target: "#q",
+			text: "",
+		});
+		expect(commandFromParams({ action: "scroll", dy: -120 })).toEqual({ action: "scroll", dy: -120 });
+		expect(commandFromParams({ action: "back" })).toEqual({ action: "back" });
+	});
+
+	it("rejects missing url/target/key and zero scroll", () => {
+		expect(() => commandFromParams({ action: "navigate" })).toThrow(/requires url/);
+		expect(() => commandFromParams({ action: "click" })).toThrow(/requires target/);
+		expect(() => commandFromParams({ action: "press" })).toThrow(/requires key/);
+		expect(() => commandFromParams({ action: "scroll", dy: 0 })).toThrow(/non-zero/);
+		expect(() => commandFromParams({ action: "scroll" })).toThrow(/non-zero/);
+	});
+});
+
+describe("createWorkbenchBinding", () => {
+	it("stamps the session id and publishes the returned state", async () => {
+		const { bridge, execute } = makeBridge();
+		const states: WorkbenchState[] = [];
+		const binding = createWorkbenchBinding({
+			sessionId: "s1",
+			bridge,
+			onState: (next) => states.push(next),
+		});
+
+		const result = await binding.execute({ action: "navigate", url: "https://example.com" });
+
+		expect(execute).toHaveBeenCalledWith({
+			action: "navigate",
+			url: "https://example.com",
+			sessionId: "s1",
+		});
+		expect(states).toEqual([result.state]);
+	});
+
+	it("stamps the session id on file calls", async () => {
+		const { bridge } = makeBridge();
+		const binding = createWorkbenchBinding({ sessionId: "s1", bridge });
+
+		await binding.listFiles();
+		await binding.listFiles("src");
+		await binding.readFile("src/a.txt");
+
+		expect(bridge.listFiles).toHaveBeenNthCalledWith(1, { sessionId: "s1" });
+		expect(bridge.listFiles).toHaveBeenNthCalledWith(2, { sessionId: "s1", path: "src" });
+		expect(bridge.readFile).toHaveBeenCalledWith({ sessionId: "s1", path: "src/a.txt" });
+	});
+
+	it("refuses to run for a disposed session and drops state that arrives too late", async () => {
+		let alive = false;
+		const { bridge, execute } = makeBridge();
+		const onState = vi.fn();
+		const binding = createWorkbenchBinding({
+			sessionId: "s1",
+			bridge,
+			isAlive: () => alive,
+			onState,
+		});
+
+		await expect(binding.execute({ action: "snapshot" })).rejects.toThrow(/no longer active/);
+		expect(execute).not.toHaveBeenCalled();
+
+		alive = true;
+		execute.mockImplementationOnce(async () => {
+			alive = false;
+			return { state: state() };
+		});
+		await expect(binding.execute({ action: "snapshot" })).rejects.toThrow(/no longer active/);
+		expect(onState).not.toHaveBeenCalled();
+	});
+
+	it("keeps a subscriber error from failing the host command", async () => {
+		const { bridge } = makeBridge();
+		const binding = createWorkbenchBinding({
+			sessionId: "s1",
+			bridge,
+			onState: () => {
+				throw new Error("subscriber down");
+			},
+		});
+		await expect(binding.execute({ action: "snapshot" })).resolves.toMatchObject({ text: "ran snapshot" });
+	});
+});
+
+describe("makeWorkbenchTool", () => {
+	const toolFor = (bridge: WorkbenchBridge) =>
+		makeWorkbenchTool({ bind: (sessionId) => createWorkbenchBinding({ sessionId, bridge }) });
+
+	it("runs browser commands and falls back to a state summary", async () => {
+		const { bridge } = makeBridge({ execute: async () => ({ state: state() }) });
+		const tool = toolFor(bridge);
+
+		const result = await tool.execute("c1", { action: "back" }, undefined, undefined, ctx);
+
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: "back completed. Workbench open; active tab: Example (https://example.com); tabs: 1.",
+		});
+		expect(result.details.state).toEqual(state());
+	});
+
+	it("returns host text for snapshots and an image block for screenshots", async () => {
+		const { bridge } = makeBridge({
+			execute: async (command) =>
+				command.action === "screenshot"
+					? { state: state(), image: { data: "aGk=", mimeType: "image/png" } }
+					: { state: state(), text: "page text" },
+		});
+		const tool = toolFor(bridge);
+
+		const snapshot = await tool.execute("c1", { action: "snapshot" }, undefined, undefined, ctx);
+		expect(snapshot.content).toEqual([{ type: "text", text: "page text" }]);
+
+		const screenshot = await tool.execute("c2", { action: "screenshot" }, undefined, undefined, ctx);
+		expect(screenshot.content).toEqual([
+			{ type: "image", data: "aGk=", mimeType: "image/png" },
+			{ type: "text", text: "Screenshot captured (image/png)." },
+		]);
+	});
+
+	it("lists and reads workspace files through the bridge", async () => {
+		const { bridge } = makeBridge();
+		const tool = toolFor(bridge);
+
+		const listed = await tool.execute("c1", { action: "list_files", path: "src" }, undefined, undefined, ctx);
+		expect(listed.content).toEqual([{ type: "text", text: "Files in src:\n[file] src/a.txt" }]);
+		expect(listed.details.files).toEqual([{ name: "a.txt", path: "src/a.txt", directory: false }]);
+
+		const read = await tool.execute(
+			"c2",
+			{ action: "read_file", path: "src/a.txt" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(read.content).toEqual([{ type: "text", text: "hello" }]);
+		expect(read.details.file).toEqual({
+			path: "src/a.txt",
+			kind: "text",
+			truncated: false,
+		});
+	});
+
+	it("decodes data-URL image previews", async () => {
+		const { bridge } = makeBridge({
+			readFile: async ({ path }) => ({
+				path,
+				kind: "image",
+				content: "data:image/webp;base64,aGk=",
+				truncated: false,
+				mimeType: "image/webp",
+			}),
+		});
+		const tool = toolFor(bridge);
+
+		const result = await tool.execute(
+			"c1",
+			{ action: "read_file", path: "logo.webp" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.content).toEqual([
+			{ type: "image", data: "aGk=", mimeType: "image/webp" },
+			{ type: "text", text: "Image file logo.webp (image/webp)." },
+		]);
+	});
+
+	it("propagates validation errors before touching the bridge", async () => {
+		const { bridge, execute } = makeBridge();
+		const tool = toolFor(bridge);
+
+		await expect(tool.execute("c1", { action: "navigate" }, undefined, undefined, ctx)).rejects.toThrow(
+			/requires url/,
+		);
+		expect(execute).not.toHaveBeenCalled();
+	});
+});
+
+describe("makeWorkbenchExtension", () => {
+	it("registers the workbench tool and forwards state", async () => {
+		const { bridge } = makeBridge();
+		const onState = vi.fn();
+		const isSessionAlive = vi.fn(() => true);
+		const extension = makeWorkbenchExtension({ bridge, onState, isSessionAlive });
+
+		const tools: Array<{ name: string; execute: (...args: never[]) => Promise<unknown> }> = [];
+		const pi = { registerTool: (tool: (typeof tools)[number]) => tools.push(tool) };
+		(extension as { factory: (pi: unknown) => void }).factory(pi);
+
+		expect(tools.map((tool) => tool.name)).toEqual(["workbench"]);
+		const result = (await tools[0]?.execute("c1", { action: "open" }, undefined, undefined, ctx)) as {
+			content: unknown;
+		};
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "ran open",
+			},
+		]);
+		expect(isSessionAlive).toHaveBeenCalledWith("s1");
+		expect(onState).toHaveBeenCalledWith(state());
+	});
+});
+
+describe("PiBackend workbench wiring", () => {
+	it("broadcasts published state and delegates state reads to the injected bridge", async () => {
+		const { bridge } = makeBridge();
+		const backend = new PiBackend({ projectTrust: false, permissionGates: false, workbench: bridge });
+		try {
+			const seen: WorkbenchState[] = [];
+			const unsubscribe = backend.onWorkbenchState((next) => seen.push(next));
+
+			backend.publishWorkbenchState(state());
+			expect(seen).toEqual([state()]);
+
+			unsubscribe();
+			backend.publishWorkbenchState(state(false));
+			expect(seen).toHaveLength(1);
+
+			await expect(backend.getWorkbenchState("s1")).resolves.toEqual(state());
+			expect(bridge.getState).toHaveBeenCalledWith("s1");
+		} finally {
+			backend.dispose();
+		}
+	});
+
+	it("returns a closed snapshot when no bridge is injected", async () => {
+		const backend = new PiBackend({ projectTrust: false, permissionGates: false });
+		try {
+			await expect(backend.getWorkbenchState("s1")).resolves.toEqual(emptyWorkbenchState("s1"));
+		} finally {
+			backend.dispose();
+		}
+	});
+});

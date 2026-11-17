@@ -1,0 +1,18 @@
+{
+  "name": "percho-workbench-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Standalone, reversible Workbench compatibility add-on for Percho",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test --test-concurrency=1 tests/installer.test.mjs",
+    "rebuild-host": "node scripts/rebuild-host.mjs",
+    "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "release:source": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/source-release.ps1",
+    "verify:release": "node scripts/verify-release.mjs"
+  },
+  "engines": { "node": ">=22.19" },
+  "devDependencies": { "@electron/asar": "3.4.1", "esbuild": "0.25.12" }
+}

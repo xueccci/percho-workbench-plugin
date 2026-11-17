@@ -1,0 +1,293 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "../../i18n";
+import { errText } from "../../lib/error-text";
+import { ChevronRightIcon, FileTextIcon, FolderIcon, FolderOpenIcon, RefreshIcon } from "../icons";
+import { Button } from "../ui/Button";
+import { Tooltip } from "../ui/Tooltip";
+import type { WorkbenchFileContent, WorkbenchFileEntry } from "./types";
+import { getWorkbenchApi } from "./workbench-api";
+
+const ROOT_KEY = "";
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+	const next = { ...record };
+	delete next[key];
+	return next;
+}
+
+function imageSource(content: WorkbenchFileContent): string {
+	if (content.content.startsWith("data:")) return content.content;
+	return `data:${content.mimeType ?? "image/png"};base64,${content.content}`;
+}
+
+/**
+ * Workspace file browser: lazy directory expansion + read-only text/image preview.
+ * Requests are generation-guarded so late responses from a previous session, refresh,
+ * or previously selected file never overwrite the current view.
+ */
+export function WorkbenchFiles({ sessionId }: { sessionId: string }) {
+	const t = useT();
+	const [directories, setDirectories] = useState<Record<string, WorkbenchFileEntry[]>>({});
+	const [loading, setLoading] = useState<Record<string, boolean>>({});
+	const [directoryErrors, setDirectoryErrors] = useState<Record<string, string>>({});
+	const [expanded, setExpanded] = useState<string[]>([]);
+	const [selected, setSelected] = useState<string | null>(null);
+	const [preview, setPreview] = useState<WorkbenchFileContent | null>(null);
+	const [previewLoading, setPreviewLoading] = useState(false);
+	const [previewError, setPreviewError] = useState<string | null>(null);
+	const generationRef = useRef(0);
+	const previewSequenceRef = useRef(0);
+
+	const loadDirectory = useCallback(
+		async (path?: string) => {
+			const key = path ?? ROOT_KEY;
+			const generation = generationRef.current;
+			setLoading((current) => ({ ...current, [key]: true }));
+			setDirectoryErrors((current) => withoutKey(current, key));
+			try {
+				const entries = await getWorkbenchApi().workbenchListFiles(
+					path === undefined ? { sessionId } : { sessionId, path },
+				);
+				if (generation !== generationRef.current) return;
+				setDirectories((current) => ({ ...current, [key]: entries }));
+			} catch (caught) {
+				if (generation !== generationRef.current) return;
+				setDirectoryErrors((current) => ({
+					...current,
+					[key]: errText(caught) ?? String(caught),
+				}));
+			} finally {
+				if (generation === generationRef.current) setLoading((current) => withoutKey(current, key));
+			}
+		},
+		[sessionId],
+	);
+
+	const reset = useCallback(() => {
+		generationRef.current += 1;
+		previewSequenceRef.current += 1;
+		setDirectories({});
+		setLoading({});
+		setDirectoryErrors({});
+		setExpanded([]);
+		setSelected(null);
+		setPreview(null);
+		setPreviewLoading(false);
+		setPreviewError(null);
+	}, []);
+
+	const invalidate = useCallback(() => {
+		generationRef.current += 1;
+		previewSequenceRef.current += 1;
+	}, []);
+
+	useEffect(() => {
+		reset();
+		void loadDirectory();
+		return invalidate;
+	}, [reset, invalidate, loadDirectory]);
+
+	const openFile = useCallback(
+		async (path: string) => {
+			const generation = generationRef.current;
+			const sequence = ++previewSequenceRef.current;
+			setSelected(path);
+			setPreview(null);
+			setPreviewError(null);
+			setPreviewLoading(true);
+			try {
+				const content = await getWorkbenchApi().workbenchReadFile({ sessionId, path });
+				if (sequence !== previewSequenceRef.current || generation !== generationRef.current) return;
+				setPreview(content);
+			} catch (caught) {
+				if (sequence !== previewSequenceRef.current || generation !== generationRef.current) return;
+				setPreviewError(errText(caught) ?? String(caught));
+			} finally {
+				if (sequence === previewSequenceRef.current && generation === generationRef.current)
+					setPreviewLoading(false);
+			}
+		},
+		[sessionId],
+	);
+
+	const refresh = () => {
+		reset();
+		void loadDirectory();
+	};
+
+	const toggleDirectory = (path: string) => {
+		const isExpanded = expanded.includes(path);
+		setExpanded((current) => (isExpanded ? current.filter((item) => item !== path) : [...current, path]));
+		if (!isExpanded && directories[path] === undefined && !loading[path]) void loadDirectory(path);
+	};
+
+	const renderEntries = (entries: WorkbenchFileEntry[], depth: number) =>
+		entries.map((entry) => {
+			const isExpanded = expanded.includes(entry.path);
+			const indent = 8 + depth * 14;
+			if (entry.directory) {
+				return (
+					<div key={entry.path}>
+						<button
+							type="button"
+							aria-expanded={isExpanded}
+							title={entry.path}
+							style={{ paddingLeft: indent }}
+							className="flex h-7 w-full items-center gap-1.5 pr-2 text-left text-ui-12 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+							onClick={() => toggleDirectory(entry.path)}
+						>
+							<ChevronRightIcon
+								size={10}
+								className={`shrink-0 text-ink-faint transition-transform ${isExpanded ? "rotate-90" : ""}`}
+							/>
+							{isExpanded ? <FolderOpenIcon size={13} /> : <FolderIcon size={13} />}
+							<span className="truncate">{entry.name}</span>
+						</button>
+						{isExpanded && (
+							<div>
+								{loading[entry.path] && (
+									<p
+										role="status"
+										style={{ paddingLeft: indent + 20 }}
+										className="py-1 text-ui-11 text-ink-faint"
+									>
+										{t("workbench.filesLoading")}
+									</p>
+								)}
+								{directoryErrors[entry.path] && (
+									<div
+										role="alert"
+										style={{ paddingLeft: indent + 20 }}
+										className="flex items-center gap-2 py-1 pr-2 text-ui-11 text-err"
+									>
+										<span className="min-w-0 flex-1 truncate">{directoryErrors[entry.path]}</span>
+										<Button size="sm" onClick={() => void loadDirectory(entry.path)}>
+											{t("workbench.retry")}
+										</Button>
+									</div>
+								)}
+								{!loading[entry.path] && !directoryErrors[entry.path] && directories[entry.path] && (
+									<div>
+										{directories[entry.path]?.length === 0 ? (
+											<p style={{ paddingLeft: indent + 20 }} className="py-1 text-ui-11 text-ink-faint">
+												{t("workbench.folderEmpty")}
+											</p>
+										) : (
+											renderEntries(directories[entry.path] ?? [], depth + 1)
+										)}
+									</div>
+								)}
+							</div>
+						)}
+					</div>
+				);
+			}
+			return (
+				<button
+					key={entry.path}
+					type="button"
+					title={entry.path}
+					aria-current={selected === entry.path ? "true" : undefined}
+					style={{ paddingLeft: indent + 20 }}
+					className={`flex h-7 w-full items-center gap-1.5 pr-2 text-left text-ui-12 transition-colors hover:bg-hover hover:text-ink ${
+						selected === entry.path ? "bg-hover text-ink" : "text-ink-2"
+					}`}
+					onClick={() => void openFile(entry.path)}
+				>
+					<FileTextIcon size={13} className="shrink-0 text-ink-faint" />
+					<span className="truncate">{entry.name}</span>
+				</button>
+			);
+		});
+
+	const rootEntries = directories[ROOT_KEY];
+	const rootLoading = loading[ROOT_KEY] === true;
+	const rootError = directoryErrors[ROOT_KEY];
+
+	return (
+		<div className="flex min-h-0 flex-1 flex-col" role="tabpanel" aria-label={t("workbench.files")}>
+			<div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-1">
+				<span className="truncate text-ui-12 text-ink-dim" title={t("workbench.files")}>
+					{t("workbench.files")}
+				</span>
+				<Tooltip label={t("workbench.refresh")} align="end">
+					<Button size="sm" className="px-1.5 py-1" aria-label={t("workbench.refresh")} onClick={refresh}>
+						<RefreshIcon size={13} />
+					</Button>
+				</Tooltip>
+			</div>
+
+			<div className="min-h-0 flex-[2] overflow-y-auto border-b border-border py-1">
+				{rootLoading && (
+					<p role="status" className="px-2 py-1 text-ui-11 text-ink-faint">
+						{t("workbench.filesLoading")}
+					</p>
+				)}
+				{rootError && (
+					<div role="alert" className="flex items-center gap-2 px-2 py-1 text-ui-11 text-err">
+						<span className="min-w-0 flex-1">
+							{t("workbench.filesError")}: {rootError}
+						</span>
+						<Button size="sm" onClick={() => void loadDirectory()}>
+							{t("workbench.retry")}
+						</Button>
+					</div>
+				)}
+				{!rootLoading && !rootError && rootEntries?.length === 0 && (
+					<p className="px-2 py-1 text-ui-11 text-ink-faint">{t("workbench.filesEmpty")}</p>
+				)}
+				{rootEntries && renderEntries(rootEntries, 0)}
+			</div>
+
+			<div className="flex min-h-0 flex-[3] flex-col">
+				{selected ? (
+					<>
+						<div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
+							<span className="min-w-0 flex-1 truncate text-ui-11 text-ink-dim" title={selected}>
+								{selected}
+							</span>
+							{preview?.truncated && (
+								<span className="shrink-0 text-ui-11 text-warn">{t("workbench.previewTruncated")}</span>
+							)}
+						</div>
+						<div className="relative min-h-0 flex-1 overflow-auto">
+							{previewLoading && (
+								<p role="status" className="p-3 text-ui-11 text-ink-faint">
+									{t("workbench.previewLoading")}
+								</p>
+							)}
+							{previewError && (
+								<div role="alert" className="flex flex-col items-start gap-2 p-3 text-ui-11 text-err">
+									<span>
+										{t("workbench.previewError")}: {previewError}
+									</span>
+									<Button size="sm" onClick={() => void openFile(selected)}>
+										{t("workbench.retry")}
+									</Button>
+								</div>
+							)}
+							{preview?.kind === "image" && (
+								<div className="flex h-full items-center justify-center p-3">
+									<img
+										src={imageSource(preview)}
+										alt={preview.path}
+										className="max-h-full max-w-full object-contain"
+									/>
+								</div>
+							)}
+							{preview?.kind === "text" && (
+								<pre className="min-h-full whitespace-pre-wrap break-words p-3 font-mono text-ui-12 text-ink-2">
+									{preview.content}
+								</pre>
+							)}
+						</div>
+					</>
+				) : (
+					<div className="flex h-full items-center justify-center px-4 text-center text-ui-12 text-ink-faint">
+						{t("workbench.selectFile")}
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}

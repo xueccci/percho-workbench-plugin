@@ -1,0 +1,65 @@
+import { environmentEntityRef } from "@percho/shared";
+import { useT } from "../../i18n";
+import { errText } from "../../lib/error-text";
+import { useSessionsStore } from "../../stores/sessions";
+import { pushToast } from "../../stores/toasts";
+import { runWorkbenchCommand, useWorkbenchStore } from "../../stores/workbench";
+import { PanelLeftIcon } from "../icons";
+import { Tooltip } from "../ui/Tooltip";
+
+/**
+ * Top-bar entry. Disabled with an explanatory tooltip when there is no local session;
+ * otherwise it opens/hides the active session's docked workbench.
+ */
+export function WorkbenchToggle() {
+	const t = useT();
+	const activeSessionId = useSessionsStore((state) => state.activeSessionId);
+	const state = useWorkbenchStore((current) =>
+		activeSessionId ? current.states[activeSessionId] : undefined,
+	);
+	const local =
+		activeSessionId !== null && environmentEntityRef(activeSessionId).environment.kind === "local";
+	const disabled = !activeSessionId || !local;
+	const active = !disabled && state?.open === true;
+	const label = disabled
+		? activeSessionId
+			? t("workbench.unavailableRemote")
+			: t("workbench.unavailableNoSession")
+		: active
+			? t("workbench.hide")
+			: t("workbench.open");
+
+	const toggle = async () => {
+		if (disabled || !activeSessionId) return;
+		try {
+			await runWorkbenchCommand({
+				sessionId: activeSessionId,
+				action: active ? "hide" : "open",
+			});
+		} catch (error) {
+			pushToast("error", "workbench.commandFailed", errText(error));
+		}
+	};
+
+	return (
+		<Tooltip label={label} align="end">
+			<button
+				type="button"
+				data-workbench-toggle=""
+				className={`no-drag shrink-0 rounded-lg p-1.5 transition-colors ${
+					active
+						? "bg-hover text-ink"
+						: disabled
+							? "cursor-not-allowed text-ink-faint"
+							: "text-ink-dim hover:bg-hover hover:text-ink"
+				}`}
+				aria-label={label}
+				aria-pressed={active}
+				disabled={disabled}
+				onClick={() => void toggle()}
+			>
+				<PanelLeftIcon size={16} className="-scale-x-100" />
+			</button>
+		</Tooltip>
+	);
+}

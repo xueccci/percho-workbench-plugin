@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+.local/
+artifacts/
+*.log
+THIRD_PARTY_NOTICES.md

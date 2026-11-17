@@ -1,0 +1,82 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const api = vi.hoisted(() => ({
+	workbenchGetState: vi.fn(),
+	workbenchCommand: vi.fn(),
+	workbenchAttach: vi.fn(),
+	onWorkbenchState: vi.fn(),
+	workbenchListFiles: vi.fn(),
+	workbenchReadFile: vi.fn(),
+}));
+
+vi.mock("../api", () => ({ getPi: () => api }));
+
+import type { WorkbenchState } from "../components/workbench/types";
+import {
+	initWorkbenchBridge,
+	refreshWorkbenchState,
+	runWorkbenchCommand,
+	useWorkbenchStore,
+} from "./workbench";
+
+const state = (sessionId: string, patch: Partial<WorkbenchState> = {}): WorkbenchState => ({
+	sessionId,
+	open: true,
+	tabs: [],
+	activeTabId: null,
+	...patch,
+});
+
+describe("workbench store", () => {
+	let dispose: (() => void) | null = null;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		useWorkbenchStore.setState({ states: {}, sessionIds: [], width: 440 });
+	});
+
+	afterEach(() => {
+		dispose?.();
+		dispose = null;
+	});
+
+	it("tracks sessions by id and only grows the stable id list once", () => {
+		useWorkbenchStore.getState().applyState(state("one"));
+		const ids = useWorkbenchStore.getState().sessionIds;
+		useWorkbenchStore.getState().applyState(state("one", { open: false }));
+		expect(useWorkbenchStore.getState().sessionIds).toBe(ids);
+		expect(useWorkbenchStore.getState().states.one?.open).toBe(false);
+		useWorkbenchStore.getState().applyState(state("two"));
+		expect(useWorkbenchStore.getState().sessionIds).toEqual(["one", "two"]);
+	});
+
+	it("subscribes globally and records state for sessions the active pane has not queried", () => {
+		api.onWorkbenchState.mockReturnValue(() => {});
+		dispose = initWorkbenchBridge();
+		const callback = api.onWorkbenchState.mock.calls[0]?.[0] as (value: WorkbenchState) => void;
+		callback(state("background"));
+		expect(useWorkbenchStore.getState().states.background?.open).toBe(true);
+		expect(useWorkbenchStore.getState().sessionIds).toEqual(["background"]);
+	});
+
+	it("pulls state on session change", async () => {
+		api.workbenchGetState.mockResolvedValue(state("active"));
+		await expect(refreshWorkbenchState("active")).resolves.toMatchObject({ sessionId: "active" });
+		expect(api.workbenchGetState).toHaveBeenCalledWith({ sessionId: "active" });
+		expect(useWorkbenchStore.getState().states.active).toBeDefined();
+	});
+
+	it("folds command results back into the store", async () => {
+		api.workbenchCommand.mockResolvedValue({ state: state("active", { open: true }) });
+		await runWorkbenchCommand({ sessionId: "active", action: "open" });
+		expect(api.workbenchCommand).toHaveBeenCalledWith({ command: { sessionId: "active", action: "open" } });
+		expect(useWorkbenchStore.getState().states.active?.open).toBe(true);
+	});
+
+	it("clamps the resize width", () => {
+		useWorkbenchStore.getState().setWidth(10);
+		expect(useWorkbenchStore.getState().width).toBe(300);
+		useWorkbenchStore.getState().setWidth(5000);
+		expect(useWorkbenchStore.getState().width).toBe(720);
+	});
+});

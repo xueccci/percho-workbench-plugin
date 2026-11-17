@@ -1,0 +1,305 @@
+import { randomUUID } from "node:crypto";
+import type { WorkbenchBridge } from "@percho/backend";
+import {
+	IpcChannels,
+	type WorkbenchCommand,
+	type WorkbenchResult,
+	type WorkbenchState,
+	type WorkbenchTab,
+} from "@percho/shared";
+import { type BrowserWindow, session, type WebContents, webContents } from "electron";
+import { browserAction, normalizeWorkbenchUrl } from "./browser-actions";
+import { listWorkspaceFiles, readWorkspaceFile } from "./files";
+
+export const WORKBENCH_PARTITION = "persist:percho-workbench";
+interface BrowserTab extends WorkbenchTab {
+	guest?: WebContents;
+	ready: boolean;
+}
+interface SessionPane {
+	state: WorkbenchState;
+	tabs: Map<string, BrowserTab>;
+	queue: Promise<unknown>;
+	host: WebContents;
+}
+const actions = new Set([
+	"open",
+	"hide",
+	"navigate",
+	"new_tab",
+	"select_tab",
+	"close_tab",
+	"back",
+	"forward",
+	"reload",
+	"snapshot",
+	"click",
+	"fill",
+	"press",
+	"scroll",
+	"screenshot",
+]);
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export class WorkbenchManager {
+	private readonly panes = new Map<string, SessionPane>();
+	private readonly hosts = new Set<WebContents>();
+	private cwdFor: (id: string) => string = () => {
+		throw new Error("Workbench is not ready");
+	};
+	configure(resolveCwd: (id: string) => string): void {
+		this.cwdFor = resolveCwd;
+	}
+
+	attachHost(window: BrowserWindow): void {
+		const host = window.webContents;
+		this.hosts.add(host);
+		host.on("will-attach-webview", (event, preferences, params) => {
+			if (params.partition !== WORKBENCH_PARTITION || params.src !== "about:blank") {
+				event.preventDefault();
+				return;
+			}
+			delete preferences.preload;
+			delete params.preload;
+			delete params.disablewebsecurity;
+			preferences.nodeIntegration = false;
+			preferences.nodeIntegrationInSubFrames = false;
+			preferences.nodeIntegrationInWorker = false;
+			preferences.contextIsolation = true;
+			preferences.sandbox = true;
+			preferences.webSecurity = true;
+			preferences.webviewTag = false;
+		});
+		host.on("did-attach-webview", (_event, guest) => {
+			const allowNavigation = (event: Electron.Event, url: string) => {
+				try {
+					normalizeWorkbenchUrl(url);
+				} catch {
+					event.preventDefault();
+				}
+			};
+			guest.on("will-navigate", allowNavigation);
+			guest.on("will-redirect", allowNavigation);
+			guest.session.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
+			guest.session.setPermissionCheckHandler(() => false);
+			guest.setWindowOpenHandler(() => ({ action: "deny" }));
+		});
+		host.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
+			if (!inPlace && isMainFrame) this.resetGuests(host);
+		});
+		host.once("destroyed", () => {
+			this.hosts.delete(host);
+			for (const [id, pane] of this.panes) if (pane.host === host) this.panes.delete(id);
+		});
+	}
+
+	assertSender(sender: WebContents, frame: Electron.WebFrameMain | null): void {
+		if (!this.hosts.has(sender) || frame !== sender.mainFrame)
+			throw new Error("Workbench belongs to the main application frame");
+	}
+	private resetGuests(host: WebContents): void {
+		for (const pane of this.panes.values())
+			if (pane.host === host)
+				for (const tab of pane.tabs.values()) {
+					if (tab.guest?.debugger.isAttached()) tab.guest.debugger.detach();
+					tab.guest = undefined;
+					tab.ready = false;
+				}
+	}
+	private pane(id: string, sender?: WebContents): SessionPane {
+		if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,120}$/.test(id))
+			throw new Error("A local session is required");
+		this.cwdFor(id);
+		let pane = this.panes.get(id);
+		if (pane) {
+			if (sender && pane.host !== sender) throw new Error("Workbench session belongs to another window");
+			return pane;
+		}
+		const host = sender ?? [...this.hosts].find((item) => !item.isDestroyed());
+		if (!host || host.isDestroyed()) throw new Error("Open the desktop window before using Workbench");
+		pane = {
+			state: { sessionId: id, open: false, tabs: [], activeTabId: null },
+			tabs: new Map(),
+			queue: Promise.resolve(),
+			host,
+		};
+		this.panes.set(id, pane);
+		return pane;
+	}
+	private emit(pane: SessionPane): WorkbenchState {
+		pane.state = {
+			...pane.state,
+			tabs: [...pane.tabs.values()].map(({ id, title, url }) => ({ id, title, url })),
+		};
+		if (!pane.host.isDestroyed()) pane.host.send(IpcChannels.WorkbenchState, pane.state);
+		return this.snapshot(pane);
+	}
+	private snapshot(pane: SessionPane): WorkbenchState {
+		return { ...pane.state, tabs: pane.state.tabs.map((tab) => ({ ...tab })) };
+	}
+	getState(id: string, sender?: WebContents): WorkbenchState {
+		return this.snapshot(this.pane(id, sender));
+	}
+	private newTab(pane: SessionPane, url = "about:blank"): BrowserTab {
+		if (pane.tabs.size >= 8) throw new Error("Close a tab before opening more than eight pages");
+		const tab: BrowserTab = { id: randomUUID(), title: "", url, ready: false };
+		pane.tabs.set(tab.id, tab);
+		pane.state.activeTabId = tab.id;
+		pane.state.open = true;
+		this.emit(pane);
+		return tab;
+	}
+	async attach(id: string, tabId: string, guestId: number, sender: WebContents): Promise<void> {
+		const pane = this.pane(id, sender);
+		const tab = pane.tabs.get(tabId);
+		const guest = webContents.fromId(guestId);
+		if (
+			!tab ||
+			!guest ||
+			guest.getType() !== "webview" ||
+			guest.hostWebContents !== sender ||
+			guest.session !== session.fromPartition(WORKBENCH_PARTITION)
+		)
+			throw new Error("Guest is not a browser page owned by this session and window");
+		for (const other of this.panes.values())
+			for (const candidate of other.tabs.values())
+				if (candidate !== tab && candidate.guest === guest)
+					throw new Error("Guest is already bound to another tab");
+		if (tab.guest === guest) return;
+		if (tab.guest && !tab.guest.isDestroyed()) throw new Error("The tab already owns a live page");
+		tab.guest = guest;
+		tab.ready = false;
+		const update = () => {
+			if (tab.guest !== guest || guest.isDestroyed() || !pane.tabs.has(tab.id)) return;
+			tab.url = guest.getURL() || tab.url;
+			tab.title = guest.getTitle();
+			this.emit(pane);
+		};
+		guest.on("page-title-updated", update);
+		guest.on("did-navigate", update);
+		guest.on("did-navigate-in-page", update);
+		guest.once("destroyed", () => {
+			if (tab.guest === guest) {
+				tab.guest = undefined;
+				tab.ready = false;
+			}
+		});
+		guest.setWindowOpenHandler(({ url }) => {
+			try {
+				this.newTab(pane, normalizeWorkbenchUrl(url));
+			} catch {
+				/* Unsupported popups stay blocked. */
+			}
+			return { action: "deny" };
+		});
+		try {
+			if (tab.url !== "about:blank") await guest.loadURL(normalizeWorkbenchUrl(tab.url));
+			if (tab.guest === guest && !guest.isDestroyed()) {
+				tab.ready = true;
+				update();
+			}
+		} catch (error) {
+			tab.ready = true;
+			throw error;
+		}
+	}
+	private async guest(tab: BrowserTab): Promise<WebContents> {
+		for (let i = 0; i < 200; i++) {
+			if (tab.guest && !tab.guest.isDestroyed() && tab.ready) return tab.guest;
+			await pause(50);
+		}
+		throw new Error("Browser page did not attach; open the session in the desktop and retry");
+	}
+	async execute(command: WorkbenchCommand, sender?: WebContents): Promise<WorkbenchResult> {
+		if (!command || !actions.has(command.action)) throw new Error("Unsupported workbench action");
+		for (const key of ["url", "target", "text", "key", "tabId"] as const)
+			if (command[key] !== undefined && (typeof command[key] !== "string" || command[key].length > 65536))
+				throw new Error(`Invalid ${key}`);
+		if (["click", "fill"].includes(command.action) && !command.target) throw new Error("target is required");
+		if (command.action === "fill" && typeof command.text !== "string") throw new Error("text is required");
+		if (command.action === "press" && !command.key) throw new Error("key is required");
+		if (command.action === "scroll" && (!Number.isFinite(command.dy) || Math.abs(command.dy ?? 0) > 10000))
+			throw new Error("dy must be between -10000 and 10000");
+		const url = command.url === undefined ? undefined : normalizeWorkbenchUrl(command.url);
+		if (command.action === "navigate" && !url) throw new Error("url is required");
+		const pane = this.pane(command.sessionId, sender);
+		const run = pane.queue
+			.catch(() => {})
+			.then(async (): Promise<WorkbenchResult> => {
+				if (pane.host.isDestroyed() || this.panes.get(command.sessionId) !== pane)
+					throw new Error("Workbench window was closed");
+				if (command.action === "hide") {
+					pane.state.open = false;
+					return { state: this.emit(pane) };
+				}
+				if (command.action === "select_tab" || command.action === "close_tab") {
+					const tab = pane.tabs.get(command.tabId ?? "");
+					if (!tab) throw new Error("Tab does not belong to this session");
+					if (command.action === "close_tab") {
+						if (tab.guest?.debugger.isAttached()) tab.guest.debugger.detach();
+						pane.tabs.delete(tab.id);
+						if (pane.state.activeTabId === tab.id)
+							pane.state.activeTabId = pane.tabs.keys().next().value ?? null;
+					} else pane.state.activeTabId = tab.id;
+					return { state: this.emit(pane) };
+				}
+				let tab = command.tabId ? pane.tabs.get(command.tabId) : pane.tabs.get(pane.state.activeTabId ?? "");
+				if (command.tabId && !tab) throw new Error("Tab does not belong to this session");
+				let created = false;
+				if (command.action === "new_tab" || !tab) {
+					tab = this.newTab(pane, url);
+					created = true;
+				}
+				pane.state.open = true;
+				this.emit(pane);
+				if ((command.action === "open" || command.action === "new_tab") && !url)
+					return { state: this.snapshot(pane) };
+				const guest = await this.guest(tab);
+				let text: string | undefined;
+				if (url && !created && ["open", "navigate", "new_tab"].includes(command.action))
+					await guest.loadURL(url);
+				else if (command.action === "back" && guest.navigationHistory.canGoBack())
+					guest.navigationHistory.goBack();
+				else if (command.action === "forward" && guest.navigationHistory.canGoForward())
+					guest.navigationHistory.goForward();
+				else if (command.action === "reload") guest.reload();
+				else text = await browserAction(guest, command);
+				const image =
+					command.action === "screenshot"
+						? { data: (await guest.capturePage()).toPNG().toString("base64"), mimeType: "image/png" }
+						: undefined;
+				tab.url = guest.getURL();
+				tab.title = guest.getTitle();
+				return {
+					state: this.emit(pane),
+					...(text === undefined ? {} : { text }),
+					...(image ? { image } : {}),
+				};
+			});
+		pane.queue = run;
+		return run;
+	}
+	releaseSession(id: string): void {
+		const pane = this.panes.get(id);
+		if (!pane) return;
+		this.panes.delete(id);
+		for (const tab of pane.tabs.values()) {
+			if (tab.guest && !tab.guest.isDestroyed()) {
+				if (tab.guest.debugger.isAttached()) tab.guest.debugger.detach();
+				tab.guest.close({ waitForBeforeUnload: false });
+			}
+		}
+		pane.tabs.clear();
+		pane.state.open = false;
+		pane.state.activeTabId = null;
+		this.emit(pane);
+	}
+	readonly bridge: WorkbenchBridge = {
+		releaseSession: (id) => this.releaseSession(id),
+		execute: (command) => this.execute(command),
+		getState: async (id) => this.getState(id),
+		listFiles: ({ sessionId, path }) => listWorkspaceFiles(this.cwdFor(sessionId), path),
+		readFile: ({ sessionId, path }) => readWorkspaceFile(this.cwdFor(sessionId), path),
+	};
+}
+export const workbench = new WorkbenchManager();

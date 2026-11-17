@@ -1,0 +1,43 @@
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { listWorkspaceFiles, readWorkspaceFile } from "./files";
+
+let root: string;
+beforeEach(async () => {
+	root = await mkdtemp(join(tmpdir(), "workbench-files-"));
+});
+afterEach(async () => {
+	await rm(root, { recursive: true, force: true });
+});
+describe("workspace files", () => {
+	it("lists directories and reads bounded text from disk", async () => {
+		await mkdir(join(root, "src"));
+		await writeFile(join(root, "hello.txt"), "hello from disk");
+		expect((await listWorkspaceFiles(root)).map((entry) => entry.name)).toEqual(["src", "hello.txt"]);
+		expect(await readWorkspaceFile(root, "hello.txt")).toMatchObject({
+			kind: "text",
+			content: "hello from disk",
+			truncated: false,
+		});
+		await writeFile(join(root, "large.txt"), "a".repeat(300000));
+		const large = await readWorkspaceFile(root, "large.txt");
+		expect(large.truncated).toBe(true);
+		expect(large.content.length).toBe(262144);
+	});
+	it("rejects traversal and junctions outside the project", async () => {
+		await mkdir(join(root, "project"));
+		await mkdir(join(root, "outside"));
+		await writeFile(join(root, "outside/secret.txt"), "outside");
+		await symlink(join(root, "outside"), join(root, "project/link"), "junction");
+		await expect(readWorkspaceFile(join(root, "project"), "../outside/secret.txt")).rejects.toThrow(
+			"outside",
+		);
+		await expect(readWorkspaceFile(join(root, "project"), "link/secret.txt")).rejects.toThrow("outside");
+	});
+	it("does not treat binary contents as text", async () => {
+		await writeFile(join(root, "binary"), Buffer.from([0, 1, 2]));
+		await expect(readWorkspaceFile(root, "binary")).rejects.toThrow("binary");
+	});
+});

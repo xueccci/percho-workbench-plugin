@@ -1,0 +1,558 @@
+diff --git a/package-lock.json b/package-lock.json
+index 0d96adb..835f7e6 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -9310,6 +9310,19 @@
+ 				"url": "https://paulmillr.com/funding/"
+ 			}
+ 		},
++		"node_modules/playwright-core": {
++			"version": "1.65.1",
++			"resolved": "https://registry.npmmirror.com/playwright-core/-/playwright-core-1.65.1.tgz",
++			"integrity": "sha512-hqPpz7blSMPxWVdoeE1yiBSzXsKiVOd2k+kjCvmUywD2GPO2Dd9HfcWnq9NN0GHbNZDFgZ9JfBFr+X5/BLo0qw==",
++			"dev": true,
++			"license": "Apache-2.0",
++			"bin": {
++				"playwright-core": "cli.js"
++			},
++			"engines": {
++				"node": ">=20"
++			}
++		},
+ 		"node_modules/plist": {
+ 			"version": "3.1.0",
+ 			"resolved": "https://registry.npmmirror.com/plist/-/plist-3.1.0.tgz",
+@@ -11967,6 +11980,7 @@
+ 				"electron-builder": "^26.0.0",
+ 				"electron-vite": "^5.0.0",
+ 				"happy-dom": "^21.0.4",
++				"playwright-core": "^1.65.1",
+ 				"shiki": "^3.23.0",
+ 				"tailwindcss": "^4.3.3",
+ 				"typescript": "^5.9.0",
+diff --git a/packages/backend/src/index.ts b/packages/backend/src/index.ts
+index fcc763b..31bb51b 100644
+--- a/packages/backend/src/index.ts
++++ b/packages/backend/src/index.ts
+@@ -120,3 +120,29 @@ export {
+ 	type WebFetchDetails,
+ 	type WebFetchOptions,
+ } from "./tools/webfetch";
++export {
++	commandFromParams,
++	createWorkbenchBinding,
++	describeWorkbenchState,
++	emptyWorkbenchState,
++	makeWorkbenchExtension,
++	makeWorkbenchTool,
++	type WorkbenchBinding,
++	type WorkbenchBindingOptions,
++	type WorkbenchBridge,
++	type WorkbenchBrowserAction,
++	type WorkbenchCommand,
++	type WorkbenchCommandAction,
++	type WorkbenchCommandInput,
++	type WorkbenchExtensionOptions,
++	type WorkbenchFileContent,
++	type WorkbenchFileEntry,
++	type WorkbenchResult,
++	type WorkbenchState,
++	type WorkbenchStateEvent,
++	type WorkbenchTab,
++	type WorkbenchToolAction,
++	type WorkbenchToolDetails,
++	type WorkbenchToolOptions,
++	type WorkbenchToolParams,
++} from "./workbench";
+diff --git a/packages/backend/src/pi-backend.ts b/packages/backend/src/pi-backend.ts
+index 91b2cb9..e811904 100644
+--- a/packages/backend/src/pi-backend.ts
++++ b/packages/backend/src/pi-backend.ts
+@@ -173,6 +173,8 @@ import type { SubagentRunHandle } from "./tools/subagent/runner";
+ import { makeTodoTool } from "./tools/todo";
+ import { makeTodoReminderExtension } from "./tools/todo-reminder";
+ import { makeWebFetchTool } from "./tools/webfetch";
++import { makeWorkbenchExtension } from "./workbench/extension";
++import { emptyWorkbenchState, type WorkbenchBridge, type WorkbenchState } from "./workbench/types";
+ 
+ const log = createLogger("backend");
+ 
+@@ -233,6 +235,11 @@ export interface PiBackendOptions {
+ 	 * 目前是 MCP 的 OAuth 授权页（spec §4.2）。缺省 → 官方内置扩展自行回落到平台默认浏览器。
+ 	 */
+ 	openExternal?: (url: string) => void | Promise<void>;
++	/**
++	 * Workbench 桥（桌面端 main 注入）：工作台命令执行、文件 list/read 与状态快照全部由主进程实现，
++	 * backend 只做会话绑定/转发。缺省不注册 workbench 工具（CLI/无 UI 环境）。
++	 */
++	workbench?: WorkbenchBridge;
+ }
+ 
+ /**
+@@ -532,6 +539,8 @@ export class PiBackend {
+ 	private readonly extensionEditorTextEmitter = new Emitter<ExtensionEditorTextEvent>();
+ 	/** MCP 运行态变化（spec §4.8.1：面板刷新用） */
+ 	private readonly mcpServersChangedEmitter = new Emitter<McpServersChangedPayload>();
++	/** Workbench 状态快照（主进程执行命令/用户在 UI 操作后发布；main 转发 renderer 用） */
++	private readonly workbenchStateEmitter = new Emitter<WorkbenchState>();
+ 	/** 最近一次聚合的「server → 工具（带只读标记）」（面板初次打开时不必等下一个 turn） */
+ 	private mcpToolsByServer = new Map<string, McpToolView[]>();
+ 	/** 官方 notify 给出的每台 server 的失效原因 / 需登录（key = server 名） */
+@@ -843,12 +852,14 @@ export class PiBackend {
+ 		| ReturnType<typeof makeChannelWatchExtension>
+ 		| ReturnType<typeof makeEvapExtension>
+ 		| ReturnType<typeof makeCompactionGuardExtension>
++		| ReturnType<typeof makeWorkbenchExtension>
+ 	> {
+ 		const factories: Array<
+ 			| ReturnType<typeof makeTodoReminderExtension>
+ 			| ReturnType<typeof makeChannelWatchExtension>
+ 			| ReturnType<typeof makeEvapExtension>
+ 			| ReturnType<typeof makeCompactionGuardExtension>
++			| ReturnType<typeof makeWorkbenchExtension>
+ 		> = [];
+ 		factories.push((pi) => {
+ 			pi.on("input", () => (this.stopping ? { action: "handled" } : { action: "continue" }));
+@@ -912,6 +923,20 @@ export class PiBackend {
+ 		factories.push(makeTodoReminderExtension());
+ 		// MCP 运行态聚合（spec §4.8.1）：三个时机聚合 `mcp__<server>__<tool>`，集合变化才发事件给面板
+ 		factories.push(makeMcpInventoryExtension((servers) => this.emitMcpServersChanged(servers)));
++		// Workbench（桌面端注入桥才注册）：工具在工具执行上下文中拿 sessionId，绑定层负责校验会话代次
++		if (this.options.workbench) {
++			factories.push(
++				makeWorkbenchExtension({
++					bridge: this.options.workbench,
++					isSessionAlive: (sessionId) =>
++						!this.stopping &&
++						(modeRef === undefined
++							? this.registry.has(sessionId)
++							: this.registry.get(sessionId)?.modeRef === modeRef),
++					onState: (state) => this.workbenchStateEmitter.emit(state),
++				}),
++			);
++		}
+ 		return factories;
+ 	}
+ 
+@@ -1727,6 +1752,7 @@ export class PiBackend {
+ 	/** Registered-session-only auxiliary groups; conflict cleanup must not touch holder ids. */
+ 	private beforeSessionShutdown(entry: RegisteredSession, strict = false): void {
+ 		this.sourceSnapshots.release(this.sourceOwner(entry));
++		this.options.workbench?.releaseSession?.(entry.session.sessionId);
+ 		if (!entry.readOnly) this.media.closeOwner(entry.session.sessionId, entry.modeRef);
+ 		const failures: unknown[] = [];
+ 		try {
+@@ -2737,6 +2763,32 @@ export class PiBackend {
+ 		return this.mcpServersChangedEmitter.subscribe(handler);
+ 	}
+ 
++	/**
++	 * Workbench 状态订阅（main/renderer 共用）：agent 工具执行返回的状态与主进程主动推送
++	 * （用户切 tab、页面标题变化）走同一管线。载荷是完整快照，供 renderer 整体替换。
++	 */
++	onWorkbenchState(handler: (state: WorkbenchState) => void): () => void {
++		return this.workbenchStateEmitter.subscribe(handler);
++	}
++
++	/**
++	 * 主进程主动发布 Workbench 快照（agent 工具路径之外的用户/页面驱动变化）。
++	 * 无桥时也接受（renderer 可能已自行维护），只做转发。
++	 */
++	publishWorkbenchState(state: WorkbenchState): void {
++		if (this.stopping) return;
++		this.workbenchStateEmitter.emit(state);
++	}
++
++	/**
++	 * 拉取当前 Workbench 快照（renderer 重连/切会话时用）。无桥 → 关闭态；
++	 * 状态本身由主进程持有，这里只转发，不做缓存。
++	 */
++	async getWorkbenchState(sessionId: string): Promise<WorkbenchState> {
++		this.assertRunning();
++		return (await this.options.workbench?.getState(sessionId)) ?? emptyWorkbenchState(sessionId);
++	}
++
+ 	onLoginEvent(handler: (payload: LoginEventPayload) => void): () => void {
+ 		return this.loginEmitter.subscribe(handler);
+ 	}
+@@ -3091,6 +3143,7 @@ export class PiBackend {
+ 		this.extensionDialogResolvedEmitter.clear();
+ 		this.extensionNotifyEmitter.clear();
+ 		this.extensionEditorTextEmitter.clear();
++		this.workbenchStateEmitter.clear();
+ 		this.trustGate.dispose();
+ 		this.login.dispose();
+ 		this.traces.disposeAll();
+diff --git a/packages/desktop/package.json b/packages/desktop/package.json
+index 09e900c..63499e5 100644
+--- a/packages/desktop/package.json
++++ b/packages/desktop/package.json
+@@ -56,6 +56,7 @@
+ 		"electron-builder": "^26.0.0",
+ 		"electron-vite": "^5.0.0",
+ 		"happy-dom": "^21.0.4",
++		"playwright-core": "^1.65.1",
+ 		"shiki": "^3.23.0",
+ 		"tailwindcss": "^4.3.3",
+ 		"typescript": "^5.9.0",
+diff --git a/packages/desktop/src/main/app-identity.ts b/packages/desktop/src/main/app-identity.ts
+index e3e57f0..62c0590 100644
+--- a/packages/desktop/src/main/app-identity.ts
++++ b/packages/desktop/src/main/app-identity.ts
+@@ -7,6 +7,7 @@ import channels from "../../build/app-channels.json";
+ const metadata = app.isPackaged
+ 	? (JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as {
+ 			releaseChannel?: unknown;
++			workbenchBuild?: boolean;
+ 		})
+ 	: null;
+ if (metadata?.releaseChannel !== undefined && !["stable", "beta"].includes(String(metadata.releaseChannel)))
+@@ -17,7 +18,7 @@ export const releaseChannel = !app.isPackaged
+ 		? "beta"
+ 		: "stable";
+ export const appIdentity = channels[releaseChannel];
+-export const supportsUpdates = app.isPackaged && releaseChannel === "stable";
++export const supportsUpdates = app.isPackaged && releaseChannel === "stable" && !metadata?.workbenchBuild;
+ 
+ // 正式版与已有开发目录保持兼容；自定义 --user-data-dir 也仍由调用方指定。
+ export function configureAppIdentity(): void {
+diff --git a/packages/desktop/src/main/index.ts b/packages/desktop/src/main/index.ts
+index 5cfbd34..3e789f8 100644
+--- a/packages/desktop/src/main/index.ts
++++ b/packages/desktop/src/main/index.ts
+@@ -17,6 +17,7 @@ import { loadUiState } from "./ui-state";
+ import { initUpdater, scheduleAutoUpdateCheck } from "./updater";
+ import { applyChromeTheme, createWindow, markQuitting, resolveTheme } from "./window";
+ import { sanitizeWindowBounds } from "./window-bounds";
++import { workbench } from "./workbench/manager";
+ 
+ const log = createLogger("main");
+ let backend: PiBackend;
+@@ -70,6 +71,7 @@ app.whenReady().then(async () => {
+ 			localSessionPaths: localSessionPaths(storage.record, storage.selection.legacyRoots),
+ 			// 桌面端集成：UI 插件技能目录 + 内置协作 skill 目录（均随包分发）+ 系统提示词段落
+ 			// MCP OAuth 授权页交给系统浏览器（官方内置 mcp 扩展用；缺省则扩展自行回落到平台默认浏览器）
++			workbench: workbench.bridge,
+ 			openExternal: (url) => shell.openExternal(url),
+ 			desktopIntegration: {
+ 				appendSystemPrompt:
+@@ -85,6 +87,11 @@ app.whenReady().then(async () => {
+ 				],
+ 			},
+ 		});
++		workbench.configure((sessionId) => {
++			const meta = backend.getLoadedSessions().find((item) => item.meta.sessionId === sessionId)?.meta;
++			if (!meta || meta.readOnly) throw new Error("Open a writable local session before using Workbench");
++			return meta.cwd;
++		});
+ 		await backend.init();
+ 		attachRendererWatchdog(backend);
+ 
+diff --git a/packages/desktop/src/main/ipc/index.ts b/packages/desktop/src/main/ipc/index.ts
+index 55ba010..ee2ff21 100644
+--- a/packages/desktop/src/main/ipc/index.ts
++++ b/packages/desktop/src/main/ipc/index.ts
+@@ -21,6 +21,7 @@ import { forward, sendToRenderer } from "./send";
+ import { registerSessionsIpc } from "./sessions";
+ import { registerSettingsIpc } from "./settings";
+ import { registerUiPluginsIpc } from "./ui-plugins";
++import { registerWorkbenchIpc } from "./workbench";
+ 
+ /**
+  * IPC 注册组合入口：按域拆在 ./sessions ./settings ./packages ./app ./ui-plugins 五个文件，
+@@ -87,6 +88,7 @@ export function registerIpc(
+ 	registerExtensionDialogIpc(backend);
+ 	registerUiPluginsIpc(uiPluginsManager, trust);
+ 	registerLanIpc(lan);
++	registerWorkbenchIpc();
+ 	// 热重载 watcher：插件源码变更 → 重建 → 推 changed 事件（renderer 经 loader reloadPlugin 热替换）
+ 	uiPluginsManager.startWatcher((name) => {
+ 		sendToRenderer(IpcChannels.UiPluginsEvent, { kind: "changed", name });
+diff --git a/packages/desktop/src/main/window.ts b/packages/desktop/src/main/window.ts
+index c407a01..5bbaadd 100644
+--- a/packages/desktop/src/main/window.ts
++++ b/packages/desktop/src/main/window.ts
+@@ -11,6 +11,7 @@ import {
+ 	WINDOW_MIN_HEIGHT,
+ 	WINDOW_MIN_WIDTH,
+ } from "./window-bounds";
++import { workbench } from "./workbench/manager";
+ 
+ const __dirname = import.meta.dirname;
+ 
+@@ -141,12 +142,14 @@ export function createWindow(
+ 			contextIsolation: true,
+ 			nodeIntegration: false,
+ 			sandbox: true,
++			webviewTag: true,
+ 			// 页面不可见（最小化/锁屏/屏保）时不节流 setTimeout 等 timer：
+ 			// agent 后台跑任务时的提醒计时（voice-alerts 安静窗口）不能被 Chromium 后台节流推迟到每分钟一次
+ 			backgroundThrottling: false,
+ 		},
+ 	});
+ 
++	workbench.attachHost(window);
+ 	attachComposerEditMenu(window);
+ 	window.on("ready-to-show", () => {
+ 		window.show();
+diff --git a/packages/desktop/src/renderer/src/App.tsx b/packages/desktop/src/renderer/src/App.tsx
+index ad53014..e9d832c 100644
+--- a/packages/desktop/src/renderer/src/App.tsx
++++ b/packages/desktop/src/renderer/src/App.tsx
+@@ -18,6 +18,7 @@ import { TrustDialog } from "./components/session/TrustDialog";
+ import { SettingsDialog } from "./components/settings/SettingsDialog";
+ import { Sidebar } from "./components/sidebar/Sidebar";
+ import { Toaster } from "./components/Toaster";
++import { WorkbenchPane } from "./components/workbench/WorkbenchPane";
+ import { getExecutionApi } from "./environment-api";
+ import { useSessionEventBridge } from "./hooks/use-session-event-bridge";
+ import { useI18nStore } from "./i18n";
+@@ -140,7 +141,7 @@ export default function App() {
+ 	const bgDim = useThemeStore((s) => s.background.dim);
+ 
+ 	return (
+-		<div className="relative h-full">
++		<div className="relative h-full overflow-hidden">
+ 			{bgImage && (
+ 				<>
+ 					<div className="app-bg" style={{ backgroundImage: `url("${backgroundImageUrl(bgImage)}")` }} />
+@@ -185,6 +186,7 @@ export default function App() {
+ 						</main>
+ 						<DockSlot sessionId={activeSessionId} hideComposer={showEmpty} />
+ 					</div>
++					<WorkbenchPane />
+ 					<DiffSidebar />
+ 				</div>
+ 			</div>
+diff --git a/packages/desktop/src/renderer/src/components/session/SessionTabBar.tsx b/packages/desktop/src/renderer/src/components/session/SessionTabBar.tsx
+index 8bfbaab..7fad8a6 100644
+--- a/packages/desktop/src/renderer/src/components/session/SessionTabBar.tsx
++++ b/packages/desktop/src/renderer/src/components/session/SessionTabBar.tsx
+@@ -37,6 +37,7 @@ import { useUiPreferencesStore } from "../../stores/ui-preferences";
+ import { CloseIcon, DiffIcon, PanelLeftIcon, PinIcon, PlusIcon } from "../icons";
+ import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
+ import type { MenuAnchor } from "../ui/place-menu";
++import { WorkbenchToggle } from "../workbench/WorkbenchToggle";
+ import { RenamePopover } from "./RenamePopover";
+ import { SessionAvatar } from "./SessionAvatar";
+ import { canOpenSessionMenu, renameSession, sessionMenuItems } from "./session-menu";
+@@ -456,6 +457,7 @@ export function SessionTabBar() {
+ 			>
+ 				<DiffIcon size={16} />
+ 			</button>
++			<WorkbenchToggle />
+ 			{menu !== null && (
+ 				<ContextMenu anchor={menu.anchor} items={contextMenuItems(menu.sessionId)} onClose={closeMenu} />
+ 			)}
+diff --git a/packages/desktop/src/renderer/src/i18n/en.ts b/packages/desktop/src/renderer/src/i18n/en.ts
+index 4f90860..c70e33e 100644
+--- a/packages/desktop/src/renderer/src/i18n/en.ts
++++ b/packages/desktop/src/renderer/src/i18n/en.ts
+@@ -490,6 +490,41 @@ export const en: Messages = {
+ 		expandMore: "Show remaining {lines} lines",
+ 		turnLabel: "Turn {n}",
+ 	},
++	workbench: {
++		title: "Workbench",
++		open: "Open workbench",
++		hide: "Hide workbench",
++		close: "Close workbench",
++		browser: "Browser",
++		files: "Files",
++		browserTabs: "Open pages",
++		untitled: "Untitled page",
++		newTab: "New tab",
++		closeTab: "Close tab",
++		back: "Back",
++		forward: "Forward",
++		reload: "Reload",
++		address: "Address",
++		addressPlaceholder: "Enter a URL",
++		actionFailed: "Browser action failed",
++		commandFailed: "Workbench action failed",
++		browserEmpty: "No pages open",
++		browserEmptyHint: "Open a tab to browse alongside this session.",
++		filesLoading: "Loading…",
++		filesError: "Could not load this folder",
++		filesEmpty: "This folder is empty",
++		folderEmpty: "Empty folder",
++		retry: "Retry",
++		refresh: "Refresh files",
++		previewLoading: "Loading file…",
++		previewError: "Could not open this file",
++		previewTruncated: "Truncated",
++		selectFile: "Select a file to preview",
++		resizeHandle: "Resize workbench",
++		widthPixels: "{width} pixels",
++		unavailableNoSession: "Open a session to use the workbench",
++		unavailableRemote: "The workbench is only available for local sessions",
++	},
+ 	tool: {
+ 		running: "Running…",
+ 		names: {
+diff --git a/packages/desktop/src/renderer/src/i18n/zh.ts b/packages/desktop/src/renderer/src/i18n/zh.ts
+index a99a257..6f11adc 100644
+--- a/packages/desktop/src/renderer/src/i18n/zh.ts
++++ b/packages/desktop/src/renderer/src/i18n/zh.ts
+@@ -472,6 +472,41 @@ export const zh = {
+ 		expandMore: "展开其余 {lines} 行",
+ 		turnLabel: "第 {n} 轮",
+ 	},
++	workbench: {
++		title: "工作台",
++		open: "打开工作台",
++		hide: "隐藏工作台",
++		close: "关闭工作台",
++		browser: "浏览器",
++		files: "文件",
++		browserTabs: "已打开页面",
++		untitled: "未命名页面",
++		newTab: "新建标签页",
++		closeTab: "关闭标签页",
++		back: "后退",
++		forward: "前进",
++		reload: "重新加载",
++		address: "地址",
++		addressPlaceholder: "输入网址",
++		actionFailed: "浏览器操作失败",
++		commandFailed: "工作台操作失败",
++		browserEmpty: "还没有打开的页面",
++		browserEmptyHint: "新建标签页，在会话旁边浏览网页。",
++		filesLoading: "加载中…",
++		filesError: "无法加载此文件夹",
++		filesEmpty: "此文件夹为空",
++		folderEmpty: "空文件夹",
++		retry: "重试",
++		refresh: "刷新文件",
++		previewLoading: "正在读取文件…",
++		previewError: "无法打开此文件",
++		previewTruncated: "已截断",
++		selectFile: "选择文件以预览",
++		resizeHandle: "调整工作台宽度",
++		widthPixels: "{width} 像素",
++		unavailableNoSession: "打开会话后可使用工作台",
++		unavailableRemote: "工作台仅支持本地会话",
++	},
+ 	tool: {
+ 		running: "运行中…",
+ 		names: {
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 5941534..2ff64a5 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -16,6 +16,7 @@ export * from "./model-visibility";
+ export * from "./packages";
+ export * from "./preview-excerpt";
+ export * from "./remote-runtime";
++export * from "./request-validation";
+ export * from "./runtime-node-policy";
+ export * from "./session";
+ export * from "./session-catalog";
+@@ -35,3 +36,4 @@ export * from "./typography";
+ export * from "./ui-plugins";
+ export * from "./update";
+ export * from "./update-diagnostics";
++export * from "./workbench";
+diff --git a/packages/shared/src/ipc-channels.ts b/packages/shared/src/ipc-channels.ts
+index d471276..ef9b295 100644
+--- a/packages/shared/src/ipc-channels.ts
++++ b/packages/shared/src/ipc-channels.ts
+@@ -78,6 +78,14 @@ import type { TodoItem } from "./todo";
+ import type { UiPluginInfo, UiPluginManifest, UiPluginsConfig, UiPluginsEventPayload } from "./ui-plugins";
+ import type { UpdateState } from "./update";
+ import type { UpdateDiagnosticsInfo } from "./update-diagnostics";
++import type {
++	WorkbenchCommand,
++	WorkbenchFileContent,
++	WorkbenchFileEntry,
++	WorkbenchResult,
++	WorkbenchState,
++	WorkbenchStateEvent,
++} from "./workbench";
+ 
+ /**
+  * IPC invoke 通道单一事实源（D5）：key（= PiApi 方法名）→ 通道字符串 + 参数/返回类型。
+@@ -959,6 +967,52 @@ export const UI_PLUGINS_CHANNELS = {
+ 	uiPluginsOpenDir: ch("uiPlugins:openDir", "desktop")<{ name?: string }, void>(),
+ } as const;
+ 
++/** 工作台域：main 持有真实页面，renderer 经这些通道读写状态/执行命令/挂载 guest/浏览文件 */
++export const WORKBENCH_CHANNELS = {
++	/** 拉取某 session 的工作台状态（漏事件/渲染端重载后的显式补齐） */
++	workbenchGetState: ch(
++		"workbench:getState",
++		"desktop",
++		"read",
++	)<{ sessionId: string }, WorkbenchState>({ sessionId: input.id }),
++	/** 执行一条工作台命令，结果回带最新状态 */
++	workbenchCommand: ch(
++		"workbench:command",
++		"desktop",
++		"mutation",
++	)<{ command: WorkbenchCommand }, WorkbenchResult>({
++		command: input.jsonObject<WorkbenchCommand>(),
++	}),
++	/** 把 renderer 侧 <webview> 的 guest 挂到 main 管理的那一页（webContentsId 由 renderer 提供） */
++	workbenchAttach: ch(
++		"workbench:attach",
++		"desktop",
++		"mutation",
++	)<{ sessionId: string; tabId: string; webContentsId: number }, void>({
++		sessionId: input.id,
++		tabId: input.id,
++		webContentsId: input.nonNegativeInt,
++	}),
++	/** 列目录（path 缺省为 session cwd 根） */
++	workbenchListFiles: ch(
++		"workbench:listFiles",
++		"desktop",
++		"read",
++	)<{ sessionId: string; path?: string }, WorkbenchFileEntry[]>({
++		sessionId: input.id,
++		path: input.optional(input.text),
++	}),
++	/** 只读读取文件内容（文本或图片） */
++	workbenchReadFile: ch(
++		"workbench:readFile",
++		"desktop",
++		"read",
++	)<{ sessionId: string; path: string }, WorkbenchFileContent>({
++		sessionId: input.id,
++		path: input.text,
++	}),
++} as const;
++
+ /** Desktop-owned connection control; never forwarded to a remote business handler. */
+ export const REMOTE_CHANNELS = {
+ 	remoteListSshAliases: ch("remote:listSshAliases", "desktop")<void, SshAliasDiscovery>(),
+@@ -997,6 +1051,7 @@ export const CHANNEL_TABLE = {
+ 	...LAN_CHANNELS,
+ 	...EXTENSION_DIALOG_CHANNELS,
+ 	...UI_PLUGINS_CHANNELS,
++	...WORKBENCH_CHANNELS,
+ } as const;
+ 
+ export type ChannelTable = typeof CHANNEL_TABLE;
+@@ -1067,6 +1122,10 @@ export const SUBSCRIPTION_TABLE = {
+ 		"UiPluginsEvent",
+ 		"uiPlugins:event",
+ 	),
++	onWorkbenchState: subscription<WorkbenchStateEvent, "desktop">("desktop")(
++		"WorkbenchState",
++		"workbench:state",
++	),
+ 	onQuitRequested: subscription<void, "desktop">("desktop")("QuitRequested", "app:quit-requested", true),
+ 	onUpdateEvent: subscription<UpdateState, "desktop">("desktop")("UpdateEvent", "update:event"),
+ 	onEvent: subscription<SessionEventEnvelope>()("Event", "pi:event"),
+diff --git a/packages/shared/src/ipc.ts b/packages/shared/src/ipc.ts
+index 033ab78..e747f1a 100644
+--- a/packages/shared/src/ipc.ts
++++ b/packages/shared/src/ipc.ts
+@@ -23,6 +23,7 @@ export {
+ 	type SubscriptionChannel,
+ 	type SubscriptionPayload,
+ 	UI_PLUGINS_CHANNELS,
++	WORKBENCH_CHANNELS,
+ } from "./ipc-channels";
+ 
+ type EnvironmentInvokeTable = Pick<

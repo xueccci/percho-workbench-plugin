@@ -1,0 +1,75 @@
+import { create } from "zustand";
+import type { WorkbenchCommand, WorkbenchResult, WorkbenchState } from "../components/workbench/types";
+import {
+	clampWorkbenchWidth,
+	readStoredWorkbenchWidth,
+	WORKBENCH_WIDTH_STORAGE_KEY,
+} from "../components/workbench/width";
+import { getWorkbenchApi } from "../components/workbench/workbench-api";
+
+interface WorkbenchStore {
+	/** Latest state per session. Replaced only by main-process events or command results. */
+	states: Record<string, WorkbenchState>;
+	/** Insertion order of known sessions; stable reference until a new session appears. */
+	sessionIds: string[];
+	width: number;
+	applyState: (state: WorkbenchState) => void;
+	setWidth: (width: number) => void;
+}
+
+export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
+	states: {},
+	sessionIds: [],
+	width: readStoredWorkbenchWidth(),
+
+	applyState: (state) => {
+		const previous = get().states[state.sessionId];
+		const states = { ...get().states, [state.sessionId]: state };
+		set({
+			states,
+			sessionIds: previous ? get().sessionIds : [...get().sessionIds, state.sessionId],
+		});
+	},
+
+	setWidth: (width) => {
+		const next = clampWorkbenchWidth(width);
+		if (next === get().width) return;
+		set({ width: next });
+		if (typeof localStorage !== "undefined") localStorage.setItem(WORKBENCH_WIDTH_STORAGE_KEY, String(next));
+	},
+}));
+
+let bridgeDispose: (() => void) | null = null;
+
+/**
+ * One global subscription: the agent can create workbench state before the active
+ * session pane has ever queried it, so every state push is recorded by session.
+ */
+export function initWorkbenchBridge(): () => void {
+	if (bridgeDispose) return bridgeDispose;
+	bridgeDispose = getWorkbenchApi().onWorkbenchState((state) => {
+		useWorkbenchStore.getState().applyState(state);
+	});
+	return () => {
+		bridgeDispose?.();
+		bridgeDispose = null;
+	};
+}
+
+/** Pull the state when the active session changes (missed events / renderer reload). */
+export async function refreshWorkbenchState(sessionId: string): Promise<WorkbenchState | null> {
+	try {
+		const state = await getWorkbenchApi().workbenchGetState({ sessionId });
+		useWorkbenchStore.getState().applyState(state);
+		return state;
+	} catch {
+		return null;
+	}
+}
+
+/** Run a user/agent-initiated command and fold the returned state into the store. */
+export async function runWorkbenchCommand(command: WorkbenchCommand): Promise<WorkbenchResult> {
+	const result = await getWorkbenchApi().workbenchCommand({ command });
+	useWorkbenchStore.getState().applyState(result.state);
+	return result;
+}

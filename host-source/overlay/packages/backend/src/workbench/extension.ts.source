@@ -1,0 +1,44 @@
+import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import { createWorkbenchBinding } from "./binding";
+import { makeWorkbenchTool } from "./tool";
+import type { WorkbenchBridge, WorkbenchState } from "./types";
+
+export interface WorkbenchExtensionOptions {
+	/** Main-process implementation injected via `PiBackendOptions.workbench`. */
+	bridge: WorkbenchBridge;
+	/** Forward every state snapshot to backend listeners (main → renderer). */
+	onState?: (state: WorkbenchState) => void;
+	/**
+	 * Registry generation guard: false once the owning SDK session is disposed.
+	 * Late host round-trips then neither run new commands nor publish stale state.
+	 */
+	isSessionAlive?: (sessionId: string) => boolean;
+}
+
+/**
+ * Inline extension that exposes {@link makeWorkbenchTool} to sessions whose host
+ * injected a bridge. Registered through the existing `buildExtensionFactories` path,
+ * so the SDK's `session.bindExtensions` runs it like any other built-in extension —
+ * no SDK changes and no tool registration for CLI/headless backends without a bridge.
+ *
+ * The extension has no lifecycle state of its own: the tool receives the session id
+ * from the SDK context and a fresh session binding is created per call.
+ */
+export function makeWorkbenchExtension(options: WorkbenchExtensionOptions): InlineExtension {
+	return {
+		name: "workbench",
+		factory: (pi) => {
+			pi.registerTool(
+				makeWorkbenchTool({
+					bind: (sessionId) =>
+						createWorkbenchBinding({
+							sessionId,
+							bridge: options.bridge,
+							onState: options.onState,
+							isAlive: () => (options.isSessionAlive ? options.isSessionAlive(sessionId) : true),
+						}),
+				}),
+			);
+		},
+	};
+}

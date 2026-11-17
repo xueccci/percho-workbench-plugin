@@ -1,0 +1,52 @@
+/**
+ * Workbench backend contract.
+ *
+ * The cross-process shapes (state/command/result/file payloads) live in
+ * `@percho/shared` so main, renderer, and backend share one source of truth.
+ * This module only adds the host bridge the desktop main process injects into
+ * `PiBackend` — the backend never imports Electron or controls webContents.
+ */
+import type {
+	WorkbenchCommand,
+	WorkbenchFileContent,
+	WorkbenchFileEntry,
+	WorkbenchResult,
+	WorkbenchState,
+} from "@percho/shared";
+
+export type {
+	WorkbenchCommand,
+	WorkbenchCommandAction,
+	WorkbenchFileContent,
+	WorkbenchFileEntry,
+	WorkbenchResult,
+	WorkbenchState,
+	WorkbenchStateEvent,
+	WorkbenchTab,
+} from "@percho/shared";
+
+/**
+ * Host-provided workbench implementation (Electron main process).
+ *
+ * Every method receives the owning session id; the host decides whether that session
+ * still has a live workbench pane (`sessionId` may refer to a pane the host has already
+ * torn down — it should answer with a closed/empty result rather than throw for normal
+ * "user closed the pane" cases).
+ */
+export interface WorkbenchBridge {
+	/** Current workbench snapshot for a session. */
+	getState(sessionId: string): Promise<WorkbenchState>;
+	/** Release live pages when the SDK session closes. */
+	releaseSession?(sessionId: string): void;
+	/** Run a browser command and return the resulting state (plus snapshot/text/image). */
+	execute(command: WorkbenchCommand): Promise<WorkbenchResult>;
+	/** List workspace files for the session (`path` omitted = workspace root). */
+	listFiles(args: { sessionId: string; path?: string }): Promise<WorkbenchFileEntry[]>;
+	/** Read one workspace file for preview. */
+	readFile(args: { sessionId: string; path: string }): Promise<WorkbenchFileContent>;
+}
+
+/** Closed, tab-less snapshot (no bridge / no pane yet). */
+export function emptyWorkbenchState(sessionId: string): WorkbenchState {
+	return { sessionId, open: false, tabs: [], activeTabId: null };
+}

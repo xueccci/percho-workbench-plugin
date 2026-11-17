@@ -1,0 +1,79 @@
+/**
+ * Workbench 跨进程协议（renderer ↔ main 的唯一事实源）。
+ *
+ * main 持有每个 session 的真实 webview 页面与状态，renderer 只经 window.pi 的
+ * workbenchGetState / workbenchCommand / workbenchAttach / workbenchListFiles /
+ * workbenchReadFile 读取与操作，并通过 onWorkbenchState 接收主动推送。
+ */
+
+/** 一个受 main 管理的页面标签（id 由 main 生成，renderer 只做展示与选择） */
+export interface WorkbenchTab {
+	id: string;
+	title: string;
+	url: string;
+}
+
+/** 单个 session 的工作台状态（renderer 按 sessionId 归并保留） */
+export interface WorkbenchState {
+	sessionId: string;
+	open: boolean;
+	tabs: WorkbenchTab[];
+	/** 无标签时为 null */
+	activeTabId: string | null;
+}
+
+/** 工作台命令动作集合（人机共用同一入口，无单独的控制通道） */
+export type WorkbenchCommandAction =
+	| "open"
+	| "hide"
+	| "navigate"
+	| "new_tab"
+	| "select_tab"
+	| "close_tab"
+	| "back"
+	| "forward"
+	| "reload"
+	| "snapshot"
+	| "click"
+	| "fill"
+	| "press"
+	| "scroll"
+	| "screenshot";
+
+/** 一条工作台命令；目标标签/URL/元素选择器/文本等按 action 取用 */
+export interface WorkbenchCommand {
+	sessionId: string;
+	action: WorkbenchCommandAction;
+	tabId?: string;
+	url?: string;
+	target?: string;
+	text?: string;
+	key?: string;
+	dy?: number;
+}
+
+/** 命令执行结果：始终回带最新状态，快照/截图额外带文本或图像 */
+export interface WorkbenchResult {
+	state: WorkbenchState;
+	text?: string;
+	image?: { data: string; mimeType: string };
+}
+
+/** 文件树的一项（path 为绝对路径，directory 表示可继续展开） */
+export interface WorkbenchFileEntry {
+	name: string;
+	path: string;
+	directory: boolean;
+}
+
+/** 只读预览内容：text 为原文，image 为 base64（可带 data: 前缀） */
+export interface WorkbenchFileContent {
+	path: string;
+	kind: "text" | "image";
+	content: string;
+	truncated: boolean;
+	mimeType?: string;
+}
+
+/** main→renderer 推送载荷（workbench:state）：状态变化即整份推送，renderer 不合并 */
+export type WorkbenchStateEvent = WorkbenchState;

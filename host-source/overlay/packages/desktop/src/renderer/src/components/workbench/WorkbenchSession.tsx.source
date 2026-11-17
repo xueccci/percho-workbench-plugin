@@ -1,0 +1,81 @@
+import { type ReactNode, useState } from "react";
+import { useT } from "../../i18n";
+import { errText } from "../../lib/error-text";
+import { pushToast } from "../../stores/toasts";
+import { runWorkbenchCommand } from "../../stores/workbench";
+import { CloseIcon, FolderIcon, MonitorIcon } from "../icons";
+import { Tooltip } from "../ui/Tooltip";
+import type { WorkbenchState } from "./types";
+import { WorkbenchBrowser } from "./WorkbenchBrowser";
+import { WorkbenchFiles } from "./WorkbenchFiles";
+
+type WorkbenchMode = "browser" | "files";
+
+export function WorkbenchSession({ sessionId, state }: { sessionId: string; state: WorkbenchState }) {
+	const t = useT();
+	const [mode, setMode] = useState<WorkbenchMode>("browser");
+	// Files may spawn directory requests; mount it only after the user first opens that tab.
+	const [filesMounted, setFilesMounted] = useState(false);
+
+	const hide = async () => {
+		try {
+			await runWorkbenchCommand({ sessionId, action: "hide" });
+		} catch (error) {
+			pushToast("error", "workbench.commandFailed", errText(error));
+		}
+	};
+
+	const modes: Array<{ id: WorkbenchMode; label: string; icon: ReactNode }> = [
+		{ id: "browser", label: t("workbench.browser"), icon: <MonitorIcon size={13} /> },
+		{ id: "files", label: t("workbench.files"), icon: <FolderIcon size={13} /> },
+	];
+
+	return (
+		<div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+			<div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
+				<div
+					role="tablist"
+					aria-label={t("workbench.title")}
+					className="flex min-w-0 items-center gap-0.5 rounded-lg bg-hover p-0.5"
+				>
+					{modes.map((item) => (
+						<button
+							key={item.id}
+							type="button"
+							role="tab"
+							aria-selected={mode === item.id}
+							className={`flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-ui-12 transition-colors ${
+								mode === item.id ? "bg-surface text-ink shadow-sm" : "text-ink-dim hover:text-ink"
+							}`}
+							onClick={() => {
+								setMode(item.id);
+								if (item.id === "files") setFilesMounted(true);
+							}}
+						>
+							{item.icon}
+							<span className="truncate">{item.label}</span>
+						</button>
+					))}
+				</div>
+				<Tooltip label={t("workbench.close")} align="end" className="ml-auto">
+					<button
+						type="button"
+						className="rounded-md p-1.5 text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+						aria-label={t("workbench.close")}
+						onClick={() => void hide()}
+					>
+						<CloseIcon size={10} />
+					</button>
+				</Tooltip>
+			</div>
+
+			{/* Browser always stays mounted; Files mounts on first use and then keeps its state. */}
+			<div className="min-h-0 flex-1" style={{ display: mode === "browser" ? "flex" : "none" }}>
+				<WorkbenchBrowser sessionId={sessionId} state={state} />
+			</div>
+			<div className="min-h-0 flex-1" style={{ display: mode === "files" ? "flex" : "none" }}>
+				{filesMounted && <WorkbenchFiles sessionId={sessionId} />}
+			</div>
+		</div>
+	);
+}

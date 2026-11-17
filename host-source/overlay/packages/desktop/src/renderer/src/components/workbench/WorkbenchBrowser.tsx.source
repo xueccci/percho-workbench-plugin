@@ -1,0 +1,277 @@
+import type { WebviewTag } from "electron";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "../../i18n";
+import { errText } from "../../lib/error-text";
+import { runWorkbenchCommand } from "../../stores/workbench";
+import { ArrowLeftIcon, CloseIcon, PlusIcon, RefreshIcon } from "../icons";
+import { Button } from "../ui/Button";
+import { Tooltip } from "../ui/Tooltip";
+import type { WorkbenchCommand, WorkbenchState, WorkbenchTab } from "./types";
+import { getWorkbenchApi } from "./workbench-api";
+
+type BrowserAction = "back" | "forward" | "reload" | "new_tab";
+
+/**
+ * One guest per tab. The src stays `about:blank` forever: navigation belongs to main,
+ * and changing the attribute after attach would load the stored URL a second time.
+ */
+function WorkbenchWebview({
+	sessionId,
+	tabId,
+	onError,
+}: {
+	sessionId: string;
+	tabId: string;
+	onError: (message: string) => void;
+}) {
+	const attachedRef = useRef(false);
+	const cleanupRef = useRef<(() => void) | null>(null);
+	const onErrorRef = useRef(onError);
+	onErrorRef.current = onError;
+
+	const attach = useCallback(
+		(webview: WebviewTag) => {
+			if (attachedRef.current) return;
+			attachedRef.current = true;
+			let webContentsId: number;
+			try {
+				webContentsId = webview.getWebContentsId();
+			} catch (error) {
+				attachedRef.current = false;
+				onErrorRef.current(errText(error) ?? String(error));
+				return;
+			}
+			try {
+				const workbench = getWorkbenchApi();
+				void Promise.resolve(workbench.workbenchAttach({ sessionId, tabId, webContentsId })).catch(
+					(error) => {
+						attachedRef.current = false;
+						onErrorRef.current(errText(error) ?? String(error));
+					},
+				);
+			} catch (error) {
+				attachedRef.current = false;
+				onErrorRef.current(errText(error) ?? String(error));
+			}
+		},
+		[sessionId, tabId],
+	);
+
+	const setRef = useCallback(
+		(node: HTMLWebViewElement | null) => {
+			cleanupRef.current?.();
+			cleanupRef.current = null;
+			attachedRef.current = false;
+			if (!node) return;
+			// SAFETY: this ref is assigned only to Electron's <webview>; DOM and Electron typings describe the same node.
+			const webview = node as unknown as WebviewTag;
+			const onDomReady = () => attach(webview);
+			webview.addEventListener("dom-ready", onDomReady);
+			cleanupRef.current = () => webview.removeEventListener("dom-ready", onDomReady);
+		},
+		[attach],
+	);
+
+	useEffect(
+		() => () => {
+			cleanupRef.current?.();
+			cleanupRef.current = null;
+		},
+		[],
+	);
+
+	return (
+		<webview
+			ref={setRef}
+			partition="persist:percho-workbench"
+			src="about:blank"
+			className="workbench-webview"
+			style={{ width: "100%", height: "100%" }}
+		/>
+	);
+}
+
+function tabLabel(tab: WorkbenchTab, fallback: string): string {
+	return tab.title || tab.url || fallback;
+}
+
+export function WorkbenchBrowser({ sessionId, state }: { sessionId: string; state: WorkbenchState }) {
+	const t = useT();
+	const [address, setAddress] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const inputRef = useRef<HTMLInputElement | null>(null);
+	const inputFocusedRef = useRef(false);
+
+	const tabs = state.tabs;
+	const activeTabId = state.activeTabId ?? tabs[0]?.id ?? null;
+	const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+
+	// Keep the address bar in sync with main, but never overwrite text the user is typing.
+	useEffect(() => {
+		if (!inputFocusedRef.current) setAddress(activeTab?.url ?? "");
+	}, [activeTab?.url]);
+
+	const run = async (command: Omit<WorkbenchCommand, "sessionId">) => {
+		setError(null);
+		setBusy(true);
+		try {
+			await runWorkbenchCommand({ sessionId, ...command });
+		} catch (caught) {
+			setError(errText(caught) ?? String(caught));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runAction = (action: BrowserAction) => void run({ action });
+	const navigate = () => {
+		const url = address.trim();
+		if (!url) return;
+		inputRef.current?.blur();
+		void run({ action: "navigate", url });
+	};
+
+	return (
+		<div className="flex min-h-0 flex-1 flex-col" role="tabpanel" aria-label={t("workbench.browser")}>
+			<div
+				role="tablist"
+				aria-label={t("workbench.browserTabs")}
+				className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-1.5 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+			>
+				{tabs.map((tab) => {
+					const active = tab.id === activeTabId;
+					return (
+						<div
+							key={tab.id}
+							data-workbench-tab-id={tab.id}
+							className={`group/tab flex h-7 min-w-0 shrink-0 items-center rounded-md pl-2 transition-colors ${
+								active ? "bg-hover text-ink" : "text-ink-dim hover:bg-hover hover:text-ink"
+							}`}
+						>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={active}
+								title={tabLabel(tab, t("workbench.untitled"))}
+								className="max-w-40 truncate text-left text-ui-12"
+								onClick={() => void run({ action: "select_tab", tabId: tab.id })}
+							>
+								{tabLabel(tab, t("workbench.untitled"))}
+							</button>
+							<Tooltip label={t("workbench.closeTab")} align="end">
+								<button
+									type="button"
+									className="rounded p-1 text-ink-faint transition-colors hover:text-ink"
+									aria-label={t("workbench.closeTab")}
+									onClick={() => void run({ action: "close_tab", tabId: tab.id })}
+								>
+									<CloseIcon size={9} />
+								</button>
+							</Tooltip>
+						</div>
+					);
+				})}
+				<Tooltip label={t("workbench.newTab")} align="end">
+					<button
+						type="button"
+						className="shrink-0 rounded-md p-1 text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+						aria-label={t("workbench.newTab")}
+						onClick={() => runAction("new_tab")}
+					>
+						<PlusIcon size={14} />
+					</button>
+				</Tooltip>
+			</div>
+
+			<div className="flex shrink-0 items-center gap-0.5 border-b border-border px-1.5 py-1">
+				<Tooltip label={t("workbench.back")} align="start">
+					<Button
+						size="sm"
+						className="px-1.5 py-1"
+						aria-label={t("workbench.back")}
+						disabled={!activeTab || busy}
+						onClick={() => runAction("back")}
+					>
+						<ArrowLeftIcon size={14} />
+					</Button>
+				</Tooltip>
+				<Tooltip label={t("workbench.forward")} align="start">
+					<Button
+						size="sm"
+						className="px-1.5 py-1"
+						aria-label={t("workbench.forward")}
+						disabled={!activeTab || busy}
+						onClick={() => runAction("forward")}
+					>
+						<ArrowLeftIcon size={14} className="rotate-180" />
+					</Button>
+				</Tooltip>
+				<Tooltip label={t("workbench.reload")} align="start">
+					<Button
+						size="sm"
+						className="px-1.5 py-1"
+						aria-label={t("workbench.reload")}
+						disabled={!activeTab || busy}
+						onClick={() => runAction("reload")}
+					>
+						<RefreshIcon size={13} />
+					</Button>
+				</Tooltip>
+				<form
+					className="min-w-0 flex-1"
+					onSubmit={(event) => {
+						event.preventDefault();
+						navigate();
+					}}
+				>
+					<input
+						ref={inputRef}
+						type="text"
+						value={address}
+						onChange={(event) => setAddress(event.target.value)}
+						onFocus={() => {
+							inputFocusedRef.current = true;
+						}}
+						onBlur={() => {
+							inputFocusedRef.current = false;
+							setAddress(activeTab?.url ?? "");
+						}}
+						placeholder={t("workbench.addressPlaceholder")}
+						aria-label={t("workbench.address")}
+						spellCheck={false}
+						autoComplete="off"
+						className="h-7 w-full rounded-md bg-hover px-2 text-ui-12 text-ink-2 outline-none placeholder:text-ink-faint focus:ring-1 focus:ring-border-strong"
+					/>
+				</form>
+			</div>
+
+			{error && (
+				<div role="alert" className="shrink-0 border-b border-border px-2 py-1 text-ui-11 text-err">
+					{t("workbench.actionFailed")}: {error}
+				</div>
+			)}
+
+			<div className="relative min-h-0 flex-1 bg-canvas">
+				{tabs.map((tab) => (
+					<div
+						key={tab.id}
+						className="absolute inset-0 overflow-hidden"
+						style={{ display: tab.id === activeTabId ? "flex" : "none" }}
+					>
+						<WorkbenchWebview sessionId={sessionId} tabId={tab.id} onError={setError} />
+					</div>
+				))}
+				{tabs.length === 0 && (
+					<div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+						<p className="text-ui-13 text-ink">{t("workbench.browserEmpty")}</p>
+						<p className="text-ui-12 text-ink-faint">{t("workbench.browserEmptyHint")}</p>
+						<Button size="sm" variant="primary" onClick={() => runAction("new_tab")}>
+							{t("workbench.newTab")}
+						</Button>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}

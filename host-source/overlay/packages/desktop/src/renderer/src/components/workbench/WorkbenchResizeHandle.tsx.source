@@ -1,0 +1,108 @@
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useT } from "../../i18n";
+import { useWorkbenchStore } from "../../stores/workbench";
+import { clampWorkbenchWidth, WORKBENCH_MAX_WIDTH, workbenchMaxWidth } from "./width";
+
+/**
+ * Left-edge resize handle for the right workbench. Starts from the stored width (not the
+ * DOM width), previews only in memory while dragging, and commits on every stable pointer
+ * end path. Arrow keys move it; Home/End jump to the limits.
+ */
+export function WorkbenchResizeHandle({
+	value,
+	onResizingChange,
+}: {
+	value: number;
+	onResizingChange: (resizing: boolean) => void;
+}) {
+	const t = useT();
+	const setWidth = useWorkbenchStore((state) => state.setWidth);
+	const handleRef = useRef<HTMLHRElement | null>(null);
+	const draggingRef = useRef(false);
+	const pointerIdRef = useRef<number | null>(null);
+	const startXRef = useRef(0);
+	const startWidthRef = useRef(0);
+
+	const maxWidth = useCallback(() => workbenchMaxWidth(window.innerWidth, WORKBENCH_MAX_WIDTH), []);
+
+	const finish = useCallback(() => {
+		if (!draggingRef.current) return;
+		draggingRef.current = false;
+		const pointerId = pointerIdRef.current;
+		pointerIdRef.current = null;
+		document.body.style.cursor = "";
+		onResizingChange(false);
+		const handle = handleRef.current;
+		if (handle && pointerId !== null && handle.hasPointerCapture(pointerId)) {
+			handle.releasePointerCapture(pointerId);
+		}
+	}, [onResizingChange]);
+
+	useEffect(() => {
+		const stop = () => finish();
+		window.addEventListener("blur", stop);
+		document.addEventListener("visibilitychange", stop);
+		return () => {
+			window.removeEventListener("blur", stop);
+			document.removeEventListener("visibilitychange", stop);
+		};
+	}, [finish]);
+
+	const onPointerDown = (event: ReactPointerEvent<HTMLHRElement>) => {
+		if (event.button !== 0 || draggingRef.current) return;
+		draggingRef.current = true;
+		handleRef.current = event.currentTarget;
+		pointerIdRef.current = event.pointerId;
+		startXRef.current = event.clientX;
+		startWidthRef.current = useWorkbenchStore.getState().width;
+		event.currentTarget.setPointerCapture(event.pointerId);
+		document.body.style.cursor = "col-resize";
+		onResizingChange(true);
+		event.preventDefault();
+	};
+
+	const onPointerMove = (event: ReactPointerEvent<HTMLHRElement>) => {
+		if (!draggingRef.current) return;
+		// Recover when the pointerup happened outside the window.
+		if (event.buttons === 0) {
+			finish();
+			return;
+		}
+		// Pane sits on the right: moving the left edge left makes it wider.
+		setWidth(clampWorkbenchWidth(startWidthRef.current + startXRef.current - event.clientX, maxWidth()));
+	};
+
+	const onKeyDown = (event: ReactKeyboardEvent<HTMLHRElement>) => {
+		const max = maxWidth();
+		let next: number | null = null;
+		if (event.key === "ArrowLeft") next = value + 24;
+		else if (event.key === "ArrowRight") next = value - 24;
+		else if (event.key === "Home") next = 0;
+		else if (event.key === "End") next = max;
+		if (next === null) return;
+		event.preventDefault();
+		setWidth(clampWorkbenchWidth(next, max));
+	};
+
+	return (
+		<hr
+			ref={handleRef}
+			data-workbench-resize-handle=""
+			tabIndex={0}
+			aria-orientation="vertical"
+			aria-label={t("workbench.resizeHandle")}
+			aria-valuemin={clampWorkbenchWidth(0)}
+			aria-valuemax={maxWidth()}
+			aria-valuenow={value}
+			aria-valuetext={t("workbench.widthPixels", { width: value })}
+			className="workbench-resize-handle"
+			onPointerDown={onPointerDown}
+			onPointerMove={onPointerMove}
+			onPointerUp={finish}
+			onPointerCancel={finish}
+			onLostPointerCapture={finish}
+			onKeyDown={onKeyDown}
+		/>
+	);
+}
