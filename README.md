@@ -4,6 +4,10 @@
 
 尚未发布：没有 GitHub Release、npm 包或应用商店版本，也没有自动更新通道。
 
+## 下载
+
+从本仓库的 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下载 `percho-workbench-plugin-<版本>-win-x64.zip`，旁边的 `.sha256` 文件可用于校验。源码 ZIP 仅用于自行构建。
+
 ## 支持范围
 
 - 仅支持 Windows x64。
