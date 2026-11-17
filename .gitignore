@@ -5,3 +5,6 @@ release/
 artifacts/
 *.log
 THIRD_PARTY_NOTICES.md
+npm-package/vendor/
+npm-package/LICENSE
+npm-package/NOTICE.md

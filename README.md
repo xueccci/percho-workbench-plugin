@@ -16,6 +16,16 @@
 - 不需要 Node.js 或 npm。启动器通过目标 `Percho.exe` 自带的运行时执行安装；源码开发和构建才需要 Node.js。
 - 内嵌浏览器是 Percho 自带的 Chromium，不是 Ego / Ego Lite，也不导入 Ego 的 Profile 或登录数据。
 
+## 从 Percho 包市场安装
+
+仓库同时发布一个 Pi 包 `percho-workbench`（npm，带 `pi-package` keyword），装好后在 Percho 的包页面即可搜到并安装：
+
+```bash
+pi install npm:percho-workbench
+```
+
+它提供一个 `percho_workbench` 工具（`detect` / `status` / `install` / `uninstall`，自动关闭 Percho、打补丁、重启）和一份同名 skill。包本体在 `npm-package/`，用 `npm run build:pi` 把安装器产物同步进 `vendor/`。
+
 ## 安装
 
 1. 完全退出 Percho，包括托盘图标和后台进程。安装器检测到目标仍在运行时会要求关闭后重试，不会强制结束进程。

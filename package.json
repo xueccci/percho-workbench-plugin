@@ -11,7 +11,9 @@
     "rebuild-host": "node scripts/rebuild-host.mjs",
     "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
     "release:source": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/source-release.ps1",
-    "verify:release": "node scripts/verify-release.mjs"
+    "verify:release": "node scripts/verify-release.mjs",
+    "build:pi": "node scripts/build-pi-package.mjs",
+    "publish:pi": "npm publish ./npm-package"
   },
   "engines": { "node": ">=22.19" },
   "devDependencies": { "@electron/asar": "3.4.1", "esbuild": "0.25.12" }

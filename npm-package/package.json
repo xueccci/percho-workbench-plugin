@@ -1,0 +1,23 @@
+{
+  "name": "percho-workbench",
+  "version": "0.1.0",
+  "description": "Embedded browser + files Workbench for Percho, installed as a reversible patch on the original app",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package", "percho", "workbench", "browser", "electron"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xueccci/percho-workbench-plugin.git"
+  },
+  "homepage": "https://github.com/xueccci/percho-workbench-plugin",
+  "engines": { "node": ">=22.19" },
+  "files": ["extensions", "skills", "vendor", "README.md", "LICENSE", "NOTICE.md"],
+  "pi": {
+    "extensions": ["./extensions/percho-workbench.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
