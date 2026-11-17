@@ -61,7 +61,9 @@ node scripts/verify-release.mjs "<原版 Percho 目录>" "<Workbench 源码目�
 3. **可选**：在 Percho「设置 → 包」里搜 `percho-workbench` 确认能装；若已安装过 ZIP 版本，则无需再装。
 4. **可选**：升级 Percho 前先卸载补丁（`uninstall.cmd`），否则安装器会因版本不匹配拒绝。
 
-除此之外无需人工操作：安装包、源码包、npm tarball 已构建并验证，仓库与 Release 已推送。
+如果不想在本机登录 npm，可以改用 GitHub Actions 发布（不改代码，只需一次网页设置）：在 npm 网站生成 **Automation** token，把它存为仓库 secret `NPM_TOKEN`，然后在 Actions 里手动运行 `Publish npm package`。工作流会从 Release 下载 tarball、校验 SHA-256 后发布。
+
+除此之外无需人工操作：安装包、源码包、npm tarball 已构建并验证，仓库与 Release 已推送，CI 在 Windows 上跑通。
 
 ## 已知范围
 
