@@ -2,7 +2,17 @@
 
 本包给**本机已安装的 Windows x64 Percho** 应用宿主兼容补丁，让 Percho 使用实际的嵌入式 Workbench。它是独立的离线安装包，不是 Percho 官方 UI 插件，不通过 Percho 的 UI 插件系统加载，也不需要开启或修改任何 UI 插件信任开关。
 
-尚未发布：没有 GitHub Release、npm 包或应用商店版本，也没有自动更新通道。
+已发布：npm 包 `percho-workbench@0.1.0`（已被 pi.dev/packages 收录）、GitHub Release v0.1.0（ZIP + tarball + 源码包）。没有应用商店版本，也没有自动更新通道。
+
+## 其他用户怎么装（三条路，选一条）
+
+| 你的情况 | 做法 |
+|---|---|
+| 会用终端 | `pi install npm:percho-workbench`，然后对 Agent 说“装右侧工作区” |
+| 不想碰终端 | 从 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下 `*-win-x64.zip`，解压后双击 `install.cmd`，选 `Percho` 目录 |
+| 只想看效果 | 直接看 [docs/workbench.png](docs/workbench.png) |
+
+注意：Percho 应用内的「设置 → 包」搜索当前**不保证能搜到这个包**。我实测用 Percho 自己的目录抓取代码请求 `percho-workbench`、`percho`、`workbench` 三种关键词，返回的都是同一份热门榜单（pi.dev 改版后 `?name=` 已不做服务端过滤），属于宿主侧解析失效，不是包未收录。所以请用上面两条确认可用的路径。
 
 ## 下载
 
