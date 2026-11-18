@@ -52,18 +52,13 @@ node scripts/verify-release.mjs "<原版 Percho 目录>" "<Workbench 源码目�
 
 已验证：`npm pack` 产物解压后用真实 `pi -e` 加载，模型调用 `percho_workbench(action:"detect")` 返回 `D:\pi-desktop\Percho`；本地目录安装与本机 `pi list` 均正常。
 
-## 只剩人工步骤
+## 发布状态与剩余人工步骤
 
-以下是本机无法代做、需要你醒来后一次性完成的（都已准备就绪）：
+**已发布**：`percho-workbench@0.1.0` 在 npm 上线，已收录到 https://pi.dev/packages/percho-workbench （类型 extension + skill）。核验：registry `dist.shasum` = `f1f47f81…4403fa8`，与本地 `release/percho-workbench-0.1.0.tgz` 一致，97 个文件、19.3 MB 解包体积；`pi install npm:percho-workbench` 与 `pi -e npm:percho-workbench` 均能加载并实际调用 `percho_workbench` 工具。
 
-1. **npm 登录**（唯一真正的卡点）：在本机终端执行 `npm login --auth-type=web`（需要 2FA 时输入验证器的 6 位码），完成后 `npm whoami` 应打印用户名。
-2. **发布 npm 包**：`npm publish "D:\插件\percho-workbench-plugin\release\percho-workbench-0.1.0.tgz"`。发布后 `npm view percho-workbench` 应返回 0.1.0。发布完成后 pi.dev/packages 会按 `pi-package` keyword 索引；我没有可主动提交的入口，索引时间未验证。
-3. **可选**：在 Percho「设置 → 包」里搜 `percho-workbench` 确认能装；若已安装过 ZIP 版本，则无需再装。
-4. **可选**：升级 Percho 前先卸载补丁（`uninstall.cmd`），否则安装器会因版本不匹配拒绝。
+**只剩一件事（安全）**：发布时用过的三个 token 已经出现在聊天记录里，请到 https://www.npmjs.com/settings/~/tokens 把 `npm_OcRF…`、`npm_1Ane…`、`npm_D54y…` 全部删除；本机 `.npmrc` 里保留的那个可直接删掉改回 `npm login` 生成的凭据。
 
-如果不想在本机登录 npm，可以改用 GitHub Actions 发布（不改代码，只需一次网页设置）：在 npm 网站生成 **Automation** token，把它存为仓库 secret `NPM_TOKEN`，然后在 Actions 里手动运行 `Publish npm package`。工作流会从 Release 下载 tarball、校验 SHA-256 后发布。
-
-除此之外无需人工操作：安装包、源码包、npm tarball 已构建并验证，仓库与 Release 已推送，CI 在 Windows 上跑通。
+**可选**：升级 Percho 前先卸载补丁（`uninstall.cmd`），否则安装器会因版本不匹配拒绝。
 
 ## 已知范围
 
