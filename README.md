@@ -12,7 +12,13 @@
 | 不想碰终端 | 从 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下 `*-win-x64.zip`，解压后双击 `install.cmd`，选 `Percho` 目录 |
 | 只想看效果 | 直接看 [docs/workbench.png](docs/workbench.png) |
 
-注意：Percho 应用内的「设置 → 包」搜索当前**不保证能搜到这个包**。我实测用 Percho 自己的目录抓取代码请求 `percho-workbench`、`percho`、`workbench` 三种关键词，返回的都是同一份热门榜单（pi.dev 改版后 `?name=` 已不做服务端过滤），属于宿主侧解析失效，不是包未收录。所以请用上面两条确认可用的路径。
+注意：Percho 应用内的「设置 → 包」搜索目前**搜不到它**。这不是配置问题：包已在 npm 发布、带 `pi-package` keyword，pi.dev 详情页也正常（<https://pi.dev/packages/percho-workbench>），但 npm 的搜索索引还没收录这个包名，而 pi.dev 目录（即 Percho 商店的数据源）镜像的就是 npm search。实测：
+
+- `npm view percho-workbench` → 正常返回 0.1.0
+- `npm search percho-workbench` → 只返回 `@sanity/workbench-*` 等无关包，没有本包
+- `pi.dev/packages?name=percho-workbench` → 0 条结果，但详情页 200
+
+上游已有多个同现象 issue（[#7849](https://github.com/earendil-works/pi/issues/7849)、[#7885](https://github.com/earendil-works/pi/issues/7885)、[#10145](https://github.com/earendil-works/pi/issues/10145)），等索引恢复后才能从商店直接搜到。在那之前请用上面两条已确认可用的路径。
 
 ## 下载
 
@@ -26,15 +32,17 @@
 - 不需要 Node.js 或 npm。启动器通过目标 `Percho.exe` 自带的运行时执行安装；源码开发和构建才需要 Node.js。
 - 内嵌浏览器是 Percho 自带的 Chromium，不是 Ego / Ego Lite，也不导入 Ego 的 Profile 或登录数据。
 
-## 从 Percho 包市场安装
+## npm / Pi 包
 
-仓库同时发布一个 Pi 包 `percho-workbench`（npm，带 `pi-package` keyword），装好后在 Percho 的包页面即可搜到并安装：
+仓库同时发布 Pi 包 `percho-workbench`（npm，带 `pi-package` keyword）。它提供一个 `percho_workbench` 工具（`detect` / `status` / `install` / `uninstall`，安装会在约 6 秒后自动关闭 Percho、打补丁、重启）和一份同名 skill。包本体在 `npm-package/`，用 `npm run build:pi` 把安装器产物同步进 `vendor/`。
 
 ```bash
 pi install npm:percho-workbench
 ```
 
-它提供一个 `percho_workbench` 工具（`detect` / `status` / `install` / `uninstall`，自动关闭 Percho、打补丁、重启）和一份同名 skill。包本体在 `npm-package/`，用 `npm run build:pi` 把安装器产物同步进 `vendor/`。
+装好后对 Agent 说「给 Percho 装右侧工作区」即可；也可以用 `/percho-workbench` 查状态。已实测：`pi install npm:percho-workbench`、`pi -e npm:percho-workbench` 都能加载，模型调用 `percho_workbench(action:"detect")` 能返回 `<Percho 目录>`。
+
+Percho「设置 → 包」里暂时搜不到（npm 搜索索引尚未收录，原因见上文），不等于包没发布。
 
 ## 安装
 
