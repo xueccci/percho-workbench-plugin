@@ -1,113 +1,239 @@
-# Percho Workbench 兼容安装包（Windows）
+# Percho Workbench
 
-本包给**本机已安装的 Windows x64 Percho** 应用宿主兼容补丁，让 Percho 使用实际的嵌入式 Workbench。它是独立的离线安装包，不是 Percho 官方 UI 插件，不通过 Percho 的 UI 插件系统加载，也不需要开启或修改任何 UI 插件信任开关。
+A reversible host-side add-on that gives an installed **Percho 0.6.8 (Windows x64)** a real right-hand pane: an embedded browser and a read-only project file tree. The agent drives the same page the user sees through a built-in `workbench` tool.
 
-已发布：npm 包 `percho-workbench@0.1.0`（已被 pi.dev/packages 收录）、GitHub Release v0.1.0（ZIP + tarball + 源码包）。没有应用商店版本，也没有自动更新通道。
+**English** · [中文](#中文)
 
-## 其他用户怎么装（三条路，选一条）
+This is not an official Percho plug-in. It is an independent project that patches one archive inside an existing Percho installation and restores it on uninstall. It is not affiliated with, endorsed by, or supported by the Percho project.
 
-| 你的情况 | 做法 |
-|---|---|
-| 会用终端 | `pi install npm:percho-workbench`，然后对 Agent 说“装右侧工作区” |
-| 不想碰终端 | 从 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下 `*-win-x64.zip`，解压后双击 `install.cmd`，选 `Percho` 目录 |
-| 只想看效果 | 直接看 [docs/workbench.png](docs/workbench.png) |
+## Requirements
 
-注意：Percho 应用内的「设置 → 包」搜索目前**搜不到它**。这不是配置问题：包已在 npm 发布、带 `pi-package` keyword，pi.dev 详情页也正常（<https://pi.dev/packages/percho-workbench>），但 npm 的搜索索引还没收录这个包名，而 pi.dev 目录（即 Percho 商店的数据源）镜像的就是 npm search。实测：
+| Item | Requirement |
+| --- | --- |
+| Operating system | Windows 10/11, x64 |
+| Percho | 0.6.8, build commit `87476fa1f884d3590e58400b4099212593a5a047`, unmodified |
+| Disk space | approximately 1 GB free on the target volume (backup plus temporary archive) |
+| Node.js | not required for installation |
+| Percho state | fully exited (including the tray process) before installing or uninstalling |
 
-- `npm view percho-workbench` → 正常返回 0.1.0
-- `npm search percho-workbench` → 只返回 `@sanity/workbench-*` 等无关包，没有本包
-- `pi.dev/packages?name=percho-workbench` → 0 条结果，但详情页 200
+The installer validates the Percho version, build commit, and archive SHA-256 before writing anything, and refuses any other build.
 
-上游已有多个同现象 issue（[#7849](https://github.com/earendil-works/pi/issues/7849)、[#7885](https://github.com/earendil-works/pi/issues/7885)、[#10145](https://github.com/earendil-works/pi/issues/10145)），等索引恢复后才能从商店直接搜到。在那之前请用上面两条已确认可用的路径。
+## Installation
 
-## 下载
+Two methods are available. They install the same content.
 
-从本仓库的 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下载 `percho-workbench-plugin-<版本>-win-x64.zip`，旁边的 `.sha256` 文件可用于校验。源码 ZIP 仅用于自行构建。
-
-## 支持范围
-
-- 仅支持 Windows x64。
-- 仅支持 Windows Percho **0.6.8**，构建提交 `87476fa1f884d3590e58400b4099212593a5a047`。
-- 安装器会严格检查宿主的版本、提交和文件哈希；不匹配时拒绝安装，不做强制覆盖。
-- 不需要 Node.js 或 npm。启动器通过目标 `Percho.exe` 自带的运行时执行安装；源码开发和构建才需要 Node.js。
-- 内嵌浏览器是 Percho 自带的 Chromium，不是 Ego / Ego Lite，也不导入 Ego 的 Profile 或登录数据。
-
-## npm / Pi 包
-
-仓库同时发布 Pi 包 `percho-workbench`（npm，带 `pi-package` keyword）。它提供一个 `percho_workbench` 工具（`detect` / `status` / `install` / `uninstall`，安装会在约 6 秒后自动关闭 Percho、打补丁、重启）和一份同名 skill。包本体在 `npm-package/`，用 `npm run build:pi` 把安装器产物同步进 `vendor/`。
+### A. npm package (Pi package)
 
 ```bash
 pi install npm:percho-workbench
 ```
 
-装好后对 Agent 说「给 Percho 装右侧工作区」即可；也可以用 `/percho-workbench` 查状态。已实测：`pi install npm:percho-workbench`、`pi -e npm:percho-workbench` 都能加载，模型调用 `percho_workbench(action:"detect")` 能返回 `<Percho 目录>`。
+Then ask the agent to install the Workbench, or call the tool directly:
 
-Percho「设置 → 包」里暂时搜不到（npm 搜索索引尚未收录，原因见上文），不等于包没发布。
-
-## 安装
-
-1. 完全退出 Percho，包括托盘图标和后台进程。安装器检测到目标仍在运行时会要求关闭后重试，不会强制结束进程。
-2. 将整个压缩包解压到可写目录。不要只复制单个文件，也不要直接在压缩包预览窗口中运行。
-3. 双击 `install.cmd`。
-4. 启动器会列出检测到的安装目录。来源包括正在运行的 Percho、`HKCU`/`HKLM` 卸载注册表项和常见安装位置；不会写死任何盘符。
-5. 输入编号选择目录。若没有候选或列表不对，输入 `B` 打开文件夹选择框，选择**包含 `Percho.exe` 的安装文件夹**，不是 `resources` 子目录。
-6. 安装完成后重新启动原来的 Percho，进入已创建的本地会话，点击顶栏 Diff 图标旁的「打开工作区」。右侧可切换浏览器和文件，Agent 通过内置 `workbench` 工具操作同一个页面。
-
-安装目标必须是原版，不要选之前单独构建的 `Percho-Workbench` 目录。安装会写入目标 `resources/app.asar`；请预留约 1 GB 可用空间，用于备份和临时归档。若目标位于受保护的 Program Files 目录，需以管理员身份运行安装入口。
-
-也可在命令行指定目录：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\manage.ps1 install -Target "C:\path\to\Percho"
+```text
+percho_workbench({ action: "status" })
+percho_workbench({ action: "install" })
 ```
 
-## 安装后的实际行为
+`install` schedules a detached task that closes the target Percho, applies the patch, and starts Percho again after about six seconds. Progress is written to a log file in the system temporary directory and reported by the tool.
 
-- 原版文件备份在目标目录的 `resources\.percho-workbench-plugin` 下，并记录安装清单。不要手动删除该目录。
-- 沿用现有 Percho profile 和会话数据；不迁移、不复制、不导出登录密钥。
-- 安装期间禁用 Percho 自动更新，避免更新覆盖补丁或造成哈希不匹配。要升级 Percho，请先卸载补丁，升级后再使用对应版本的补丁。
-- 卸载会按安装清单把原版资源恢复回去，并拒绝覆盖安装后被其他程序改动过的文件。恢复前会做校验；发现外来改动时停止并给出提示，不会静默覆盖。
-- 不修改 UI 插件信任开关，不安装 UI 插件，不强制结束任何进程。
+### B. Offline ZIP
 
-## 卸载与状态
+1. Download `percho-workbench-plugin-0.1.0-win-x64.zip` from [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) and verify it against the adjacent `.sha256` file.
+2. Extract the complete archive to a writable directory.
+3. Exit Percho completely, including the tray process.
+4. Run `install.cmd`.
+5. Select the folder that contains `Percho.exe`. If no candidate is listed, enter `B` and choose the folder manually. Do not select the `resources` subfolder.
+6. Start Percho, open a local session, and use the Workbench button next to the diff icon in the title bar.
 
-先完全退出 Percho，再双击 `uninstall.cmd`，选择同一个安装目录。`status.cmd` 用于查看当前状态。
+The launcher records its target, backs up the original archive, and reports a non-zero exit code on failure. It never terminates a running Percho and never modifies the UI plug-in trust settings.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\manage.ps1 status -Target "C:\path\to\Percho"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\manage.ps1 uninstall -Target "C:\path\to\Percho"
+## Why the in-app package gallery may not list it
+
+The npm package is published and indexed by pi.dev, but npm's search index has not included the package name yet. The pi.dev catalogue, which the Percho package browser reads, mirrors npm search rather than the raw registry. The following commands reproduce the discrepancy:
+
+```bash
+npm view percho-workbench version        # returns 0.1.0
+npm search percho-workbench --json       # returns unrelated @sanity/workbench-* entries only
 ```
 
-启动器会保留核心安装器返回的退出代码；启动器自身的参数或环境错误返回 `1`。核心安装器也可直接调用，参数为 `install|uninstall|status --target <Percho 目录>`。
+The package detail page is reachable at <https://pi.dev/packages/percho-workbench> while `pi.dev/packages?name=percho-workbench` returns no results. This matches several upstream reports for new Pi packages ([#7849](https://github.com/earendil-works/pi/issues/7849), [#7885](https://github.com/earendil-works/pi/issues/7885), [#10145](https://github.com/earendil-works/pi/issues/10145)). Installing by npm source or by ZIP is unaffected.
 
-## 常见问题
+## Behaviour after installation
 
-- **没有自动找到目录**：输入 `B` 手动选择包含 `Percho.exe` 的文件夹，或使用 `-Target`。
-- **提示 Percho 正在运行**：从托盘完全退出后重试。本包不会替你结束进程。
-- **版本或哈希不匹配**：当前 Percho 不是上述受支持构建。请安装对应的 0.6.8 版本；不要使用其他版本或其他 Workbench 打包目录。
-- **卸载时拒绝恢复**：原版文件在安装后被其他程序改动。先保留 `resources\.percho-workbench-plugin` 以便排查，不要强行覆盖。
+- The original archive is copied byte for byte to `resources/.percho-workbench-plugin/original.bin` together with a receipt. Do not delete this directory.
+- Only changed entries are replaced; all other archive entries, including unpacked native modules, are preserved unchanged.
+- The patch sets `workbenchBuild` in the packaged metadata, which disables Percho's automatic updates until the patch is removed.
+- Existing profiles, sessions, credentials, and UI plug-in settings are not modified.
+- Uninstallation refuses to overwrite the archive if it changed after installation, and verifies both the receipt and the backup checksum first.
 
-## 文件
+## Scope and limitations
 
-- `install.cmd`、`uninstall.cmd`、`status.cmd`：双击入口。
-- `scripts\manage.ps1`：目录检测、选择、运行时和退出代码处理。只负责启动核心安装器。
-- `dist\installer.cjs`：核心安装/卸载/状态实现。
-- `README.md`、`NOTICE.md`：使用说明与归属声明。
+- Supported host: the exact Percho build listed above. Other versions are rejected rather than patched approximately.
+- The embedded browser is Percho's own Chromium. It is not Ego Lite, and no Ego profile or login state is imported.
+- Browser entry accepts HTTP and HTTPS only. Local files require a local HTTP server.
+- File tree is read-only: text up to 256 KiB and common image formats up to 8 MiB. No editing, no Office preview, no file watching.
+- Sessions keep their own tabs; switching sessions or collapsing the pane preserves the live page. Browser tabs are not restored after Percho exits.
+- Permission requests from web pages are denied. Pages cannot access Node.js or the preload bridge.
+- Not verified: other Windows machines, administrator elevation, antivirus or application-control policies, macOS, Linux, and Percho builds other than the one listed above.
 
-## 从源码构建
+## Uninstall
 
-源码项目包括安装器和固定上游版本的宿主改动，许可证为 MIT。`host-source/overlay` 的 `.source` 文件保存新增源码，重建脚本会恢复原扩展名；`integration.patch` 保存已有文件的改动。
+```powershell
+# ZIP installation
+.\uninstall.cmd
+
+# npm package
+percho_workbench({ action: "uninstall" })
+```
+
+Both paths require Percho to be fully exited, restore the original archive from the backup, and remove the backup directory after the new archive matches the recorded hash. If Percho was updated after patching, uninstallation stops and keeps the backup for inspection.
+
+## Build from source
+
+Requires Node.js 22.19 or later and an unmodified supported Percho installation to use as the packaging base.
 
 ```bash
 npm ci
 npm test
 npm run rebuild-host -- ./upstream-workbench
 npm run build -- --host "C:/path/to/original/Percho" --workbench ./upstream-workbench
+npm run release
+npm run release:source
+npm run build:pi
 ```
 
-安装包生成在 `release/`。构建产物不包含 Percho 的可执行文件、用户配置、会话或密钥；浏览器支持文件作为宿主兼容补丁随包分发。当前功能包含基础网页操作、按会话保留标签、文件树及文本/图片只读预览；暂不提供文件编辑、站点权限授权和退出后的标签恢复。
+`host-source/` contains the upstream base commit, a patch for modified files, and the added sources stored with a `.source` suffix; `rebuild-host` restores the original extensions before building. Distribution archives contain no Percho executable, user configuration, session data, or credentials.
 
-## 恢复
+## Verification
 
-正常卸载会恢复备份归档的原始字节并恢复上游更新行为，用户数据保留。若电脑断电留下 `.percho-workbench-install.lock`，先确认没有安装器或 Percho 进程，再检查备份与日志后移除该锁；不要在仍有进程时删除。卸载发现外部更新会停止，保留备份供检查。
+Recorded evidence lives in `artifacts/` for the build machine:
 
+- Installer unit tests: 7 passed, 0 failed (`npm test`).
+- Full release flow: 12 passed, 0 failed. It installs from the extracted ZIP, exercises the real embedded page, drives it through an actual agent tool call, reads workspace files, then uninstalls and compares the restored archive hash with the original.
+- npm artefact: registry `dist.shasum` equals the SHA-1 of `release/percho-workbench-0.1.0.tgz`; both `pi install npm:percho-workbench` and `pi -e npm:percho-workbench` load the extension and execute `percho_workbench`.
+- Continuous integration runs the installer tests on `windows-latest`.
+
+## Licence and attribution
+
+MIT. See `LICENSE` and `NOTICE.md`. Percho is Copyright (c) 2026 Jaxton07, MIT licensed. The Workbench pane architecture was informed by ZCode; no ZCode source code is included.
+
+---
+
+# 中文
+
+一个可逆的宿主机附加组件：为**已安装的 Percho 0.6.8（Windows x64）**增加右侧真实分栏，包含内嵌浏览器和只读项目文件树。Agent 通过内置 `workbench` 工具操作与用户相同的页面。
+
+本项目不是 Percho 官方插件，也不经过 Percho 的 UI 插件机制。它修改已安装 Percho 内的一个归档文件，并在卸载时按字节恢复；与 Percho 项目无隶属或背书关系。
+
+## 环境要求
+
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10/11，x64 |
+| Percho | 0.6.8，构建提交 `87476fa1f884d3590e58400b4099212593a5a047`，且未被修改 |
+| 磁盘空间 | 目标磁盘约 1 GB 可用（备份加临时归档） |
+| Node.js | 安装过程不需要 |
+| Percho 状态 | 安装与卸载前必须完全退出，包括托盘进程 |
+
+安装器在写入前校验 Percho 版本、构建提交与归档 SHA-256；任一不匹配即拒绝安装。
+
+## 安装
+
+两种方式安装的内容相同。
+
+### A. npm 包（Pi 包）
+
+```bash
+pi install npm:percho-workbench
+```
+
+随后让 Agent 安装，或直接调用工具：
+
+```text
+percho_workbench({ action: "status" })
+percho_workbench({ action: "install" })
+```
+
+`install` 会启动一个独立后台任务：关闭目标 Percho、应用补丁、约六秒后重新启动 Percho。执行过程写入系统临时目录中的日志，并由工具返回路径。
+
+### B. 离线 ZIP
+
+1. 从 [Releases](https://github.com/xueccci/percho-workbench-plugin/releases) 下载 `percho-workbench-plugin-0.1.0-win-x64.zip`，用同目录的 `.sha256` 文件校验。
+2. 将完整压缩包解压到可写目录。
+3. 完全退出 Percho，包括托盘进程。
+4. 运行 `install.cmd`。
+5. 选择包含 `Percho.exe` 的文件夹。若列表中没有目标，输入 `B` 手动选择；不要选择 `resources` 子目录。
+6. 启动 Percho，进入本地会话，点击顶栏 Diff 图标旁的「打开工作区」按钮。
+
+启动器会记录目标目录、备份原归档，失败时返回非零退出码。它不会结束正在运行的 Percho，也不会修改 UI 插件信任设置。
+
+## 应用内商店未列出本包的原因
+
+npm 包已发布且被 pi.dev 收录，但 npm 的搜索索引尚未包含该包名。Percho 插件商店读取的 pi.dev 目录镜像的是 npm 搜索结果，而非 registry 原始数据。可用以下命令复现：
+
+```bash
+npm view percho-workbench version        # 返回 0.1.0
+npm search percho-workbench --json       # 仅返回无关的 @sanity/workbench-* 条目
+```
+
+详情页 <https://pi.dev/packages/percho-workbench> 可访问，但 `pi.dev/packages?name=percho-workbench` 无结果。该现象与多个上游 issue 一致（[#7849](https://github.com/earendil-works/pi/issues/7849)、[#7885](https://github.com/earendil-works/pi/issues/7885)、[#10145](https://github.com/earendil-works/pi/issues/10145)）。通过 npm 源或 ZIP 安装不受影响。
+
+## 安装后的行为
+
+- 原归档按字节复制到 `resources/.percho-workbench-plugin/original.bin`，并附带安装凭据。不要删除该目录。
+- 仅替换发生变更的条目；其余归档条目（包括解包的本地模块）保持不变。
+- 补丁在打包元数据中写入 `workbenchBuild`，从而在卸载前关闭 Percho 自动更新。
+- 既有 profile、会话、凭据与 UI 插件设置均不修改。
+- 卸载前校验安装凭据与备份校验和；若归档在安装后被其他程序改动，则拒绝覆盖。
+
+## 范围与限制
+
+- 仅支持上表指定的 Percho 构建；其他版本直接拒绝，不做近似修改。
+- 内嵌浏览器使用 Percho 自带 Chromium，不是 Ego Lite，也不导入 Ego 的 profile 或登录状态。
+- 浏览器仅接受 HTTP 与 HTTPS 地址；本地文件需通过本地 HTTP 服务访问。
+- 文件树为只读：文本上限 256 KiB，常见图片上限 8 MiB。不支持编辑、Office 预览与文件监听。
+- 各会话标签独立；切换会话或收起面板会保留活动页面。Percho 退出后浏览器标签不恢复。
+- 网页的权限请求一律拒绝；页面无法访问 Node.js 或 preload 桥。
+- 未验证：其他 Windows 机器、管理员提权、杀毒软件或应用控制策略、macOS、Linux，以及上表之外的 Percho 构建。
+
+## 卸载
+
+```powershell
+# ZIP 安装
+.\uninstall.cmd
+
+# npm 安装
+percho_workbench({ action: "uninstall" })
+```
+
+两种方式均要求完全退出 Percho，会从备份恢复原归档，并在新归档与记录哈希一致后删除备份目录。若 Percho 在打补丁后被更新，卸载会停止并保留备份以供检查。
+
+## 从源码构建
+
+需要 Node.js 22.19 或更高版本，以及一份未被修改的受支持 Percho 安装作为打包基准。
+
+```bash
+npm ci
+npm test
+npm run rebuild-host -- ./upstream-workbench
+npm run build -- --host "C:/path/to/original/Percho" --workbench ./upstream-workbench
+npm run release
+npm run release:source
+npm run build:pi
+```
+
+`host-source/` 保存上游基础提交、已修改文件的补丁，以及以 `.source` 后缀保存的新增源码；`rebuild-host` 在构建前恢复原始扩展名。分发包不包含 Percho 可执行文件、用户配置、会话数据或凭据。
+
+## 验证记录
+
+构建机器上的证据保存在 `artifacts/`：
+
+- 安装器单元测试：7 项通过，0 失败（`npm test`）。
+- 完整发布流程：12 项通过，0 失败。流程从解压后的 ZIP 安装、驱动真实内嵌页面、通过真实 Agent 工具调用修改页面、读取工作区文件，最后卸载并比对恢复后的归档哈希。
+- npm 制品：registry 的 `dist.shasum` 与 `release/percho-workbench-0.1.0.tgz` 的 SHA-1 一致；`pi install npm:percho-workbench` 与 `pi -e npm:percho-workbench` 均能加载扩展并执行 `percho_workbench`。
+- 持续集成在 `windows-latest` 上运行安装器测试。
+
+## 许可与归属
+
+MIT，详见 `LICENSE` 与 `NOTICE.md`。Percho 版权归 Jaxton07（2026），采用 MIT 许可。右侧工作区的架构参考了 ZCode，但未包含其源代码。
